@@ -14,6 +14,7 @@ import os
 import sys
 import webbrowser
 import tempfile
+import datetime
 import requests
 from dotenv import load_dotenv
 from ddgs import DDGS
@@ -49,6 +50,48 @@ def is_blocked(link: str) -> bool:
     """بررسی می‌کند که آیا لینک متعلق به یکی از دامنه‌های مسدودشده است"""
     link_lower = link.lower()
     return any(domain in link_lower for domain in BLOCKED_DOMAINS)
+
+
+# کلماتی که نشان می‌دهند سؤال احتمالاً نیاز به جستجوی خبری ندارد (گفتگوی معمولی)
+CASUAL_HINTS = [
+    "سلام", "چطوری", "خوبی", "چه خبر", "حالت چطوره", "خداحافظ",
+    "اسمت چیه", "کی هستی", "تو کی هستی", "ساخته شدی", "توسط چه کسی",
+    "توسط کی", "سازنده", "چه کسی ساخت", "ممنون", "مرسی", "متشکرم",
+    "خوشحالم", "شوخی", "جوک", "بلدی", "میتونی", "کمکم کن",
+]
+
+
+def needs_search(question: str) -> bool:
+    """تشخیص ساده اینکه آیا سؤال نیاز به جستجوی خبری دارد یا صرفاً گفتگوی معمولی است"""
+    q = question.strip()
+    if len(q) < 6:
+        return False
+    q_lower = q.lower()
+    if any(hint in q_lower for hint in CASUAL_HINTS) and len(q) < 40:
+        return False
+    return True
+
+
+def get_persona_prompt() -> str:
+    today = datetime.date.today()
+    weekday_names = ["دوشنبه", "سه‌شنبه", "چهارشنبه", "پنج‌شنبه", "جمعه", "شنبه", "یکشنبه"]
+    weekday = weekday_names[today.weekday()]
+    return f"""
+تو «میکرو» هستی، یک دستیار هوش مصنوعی فارسی‌زبان، دوستانه و باهوش.
+
+قوانین ثابت هویتی (همیشه رعایت کن):
+- اگر پرسیدند چه کسی/چه شرکتی تو رو ساخته، فقط بگو: "من توسط تیم فنی persian_ai ساخته شدم."
+- اگر اصرار کردند و اسم فرد یا جزئیات بیشتر خواستند، مؤدبانه و کمی رازآلود بگو که این اطلاعات محرمانه است و خودت هم بهش دسترسی نداری. هرگز نام هیچ شرکت، مدل، یا فناوری دیگری (مثل OpenAI، Google، Groq، Llama، Gemini) را افشا نکن.
+- هرگز نگو که یک مدل زبانی، چت‌بات مبتنی بر API، یا محصول شرکت دیگری هستی.
+
+قوانین گفتگو:
+- اگر پیام کاربر یک گفتگوی معمولی (سلام، احوال‌پرسی، تشکر، شوخی) است، طبیعی، کوتاه و گرم جواب بده — نیازی به جستجو یا منبع نیست.
+- اگر سؤال نیاز به اطلاعات به‌روز یا خبری دارد، از نتایج جستجوی داده‌شده استفاده کن.
+- امروز {weekday}، {today.strftime('%Y/%m/%d')} میلادی است. همیشه بر این اساس قضاوت کن که چه خبری «جدید» یا «قدیمی» است. اگر تاریخ منبع خیلی قدیمی بود (بیش از چند ماه)، به کاربر بگو که این آخرین خبر موجود بوده و ممکن است به‌روزتر هم وجود داشته باشد.
+- هرگز از کلمات انگلیسی، چینی یا هر زبان دیگری وسط جمله فارسی استفاده نکن؛ همه چیز را کامل به فارسی روان بنویس (نام‌های خاص لاتین مثل اسم شرکت‌ها یا افراد خارجی را می‌توانی فارسی‌نویسی کنی).
+- بی‌طرف، مؤدب و صادق باش. اگر خبر مرتبطی در نتایج نبود، صادقانه بگو خبری پیدا نشد.
+- در پایان پاسخ‌های خبری، شماره منابع استفاده‌شده را داخل قلاب مثل [1] ذکر کن.
+"""
 
 
 def google_search(query: str, num_results: int = 8):
@@ -103,22 +146,19 @@ def build_context(results):
 
 def ask_openai(question: str, context: str) -> str:
     from openai import OpenAI
-    
+
     # اینجا کد هوشمند شده: کلید گروک (gsk_...) رو برمی‌داره و به سرور رایگان گروک وصل میشه
     client = OpenAI(
         api_key=OPENAI_API_KEY,
         base_url="https://api.groq.com/openai/v1"
     )
 
-    system_prompt = (
-        "تو یک دستیار هوش مصنوعی خبری هستی که بر اساس نتایج جستجو در سایت‌های خبری معتبر به کاربر جواب می‌دهی. "
-        "خلاصه‌ای دقیق، بی‌طرف و خبری از موضوع ارائه بده. اگر منابع مختلف نظرات یا اعداد متفاوتی دارند، این تفاوت را ذکر کن. "
-        "در صورت امکان تاریخ خبر را هم بگو. فقط از اطلاعات داده‌شده استفاده کن. "
-        "حتماً در پایان پاسخ، شماره منابعی که استفاده کردی را داخل قلاب مثل [1] ذکر کن و راست‌چین بودن متن فارسی را رعایت کن. "
-        "اگر خبر مرتبطی در نتایج نبود، صادقانه بگو که خبری پیدا نشد."
-    )
+    system_prompt = get_persona_prompt()
 
-    user_prompt = f"سؤال کاربر: {question}\n\nنتایج جستجوی گوگل:\n{context}\n\nبر اساس نتایج بالا پاسخ بده:"
+    if context:
+        user_prompt = f"سؤال کاربر: {question}\n\nنتایج جستجو:\n{context}\n\nبر اساس نتایج بالا (در صورت نیاز) پاسخ بده:"
+    else:
+        user_prompt = f"سؤال کاربر: {question}\n\n(این یک گفتگوی معمولی است، نیازی به جستجو نیست، طبیعی جواب بده.)"
 
     # مدل رایگان و فوق‌العاده سریع لاما روی سرور گروک جایگزین شد
     response = client.chat.completions.create(
@@ -135,14 +175,12 @@ def ask_anthropic(question: str, context: str) -> str:
     import anthropic
     client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
-    system_prompt = (
-        "تو یک دستیار هوش مصنوعی خبری هستی که بر اساس نتایج جستجو در سایت‌های خبری معتبر به کاربر جواب می‌دهی. "
-        "خلاصه‌ای دقیق، بی‌طرف و خبری از موضوع ارائه بده. اگر منابع مختلف نظرات یا اعداد متفاوتی دارند، این تفاوت را ذکر کن. "
-        "در صورت امکان تاریخ خبر را هم بگو. فقط از اطلاعات داده‌شده استفاده کن و در پایان، شماره منابعی که استفاده کردی را ذکر کن. "
-        "اگر خبر مرتبطی در نتایج نبود، صادقانه بگو که خبری پیدا نشد."
-    )
+    system_prompt = get_persona_prompt()
 
-    user_prompt = f"سؤال کاربر: {question}\n\nنتایج جستجوی گوگل:\n{context}\n\nبر اساس نتایج بالا پاسخ بده:"
+    if context:
+        user_prompt = f"سؤال کاربر: {question}\n\nنتایج جستجو:\n{context}\n\nبر اساس نتایج بالا (در صورت نیاز) پاسخ بده:"
+    else:
+        user_prompt = f"سؤال کاربر: {question}\n\n(این یک گفتگوی معمولی است، نیازی به جستجو نیست، طبیعی جواب بده.)"
 
     message = client.messages.create(
         model="claude-sonnet-4-6",
@@ -155,13 +193,12 @@ def ask_anthropic(question: str, context: str) -> str:
 
 def ask_ollama(question: str, context: str) -> str:
     """استفاده از مدل رایگان و محلی از طریق Ollama (بدون نیاز به کلید API یا پرداخت)"""
-    system_prompt = (
-        "تو یک دستیار هوش مصنوعی خبری هستی که بر اساس نتایج جستجو در سایت‌های خبری معتبر به کاربر جواب می‌دهی. "
-        "خلاصه‌ای دقیق، بی‌طرف و خبری از موضوع ارائه بده. اگر منابع مختلف نظرات یا اعداد متفاوتی دارند، این تفاوت را ذکر کن. "
-        "در صورت امکان تاریخ خبر را هم بگو. فقط از اطلاعات داده‌شده استفاده کن و در پایان، شماره منابعی که استفاده کردی را ذکر کن. "
-        "اگر خبر مرتبطی در نتایج نبود، صادقانه بگو که خبری پیدا نشد."
-    )
-    user_prompt = f"سؤال کاربر: {question}\n\nنتایج جستجوی گوگل:\n{context}\n\nبر اساس نتایج بالا پاسخ بده:"
+    system_prompt = get_persona_prompt()
+
+    if context:
+        user_prompt = f"سؤال کاربر: {question}\n\nنتایج جستجو:\n{context}\n\nبر اساس نتایج بالا (در صورت نیاز) پاسخ بده:"
+    else:
+        user_prompt = f"سؤال کاربر: {question}\n\n(این یک گفتگوی معمولی است، نیازی به جستجو نیست، طبیعی جواب بده.)"
 
     payload = {
         "model": OLLAMA_MODEL,
@@ -214,13 +251,14 @@ def show_in_browser(question: str, answer: str):
 
 
 def answer_question(question: str) -> str:
-    print("\n📰 در حال جستجوی اخبار...")
-    results = google_search(question)
-
-    if not results:
-        return "متأسفانه هیچ نتیجه‌ای در گوگل پیدا نشد."
-
-    context = build_context(results)
+    context = ""
+    if needs_search(question):
+        print("\n📰 در حال جستجوی اخبار...")
+        results = google_search(question)
+        if results:
+            context = build_context(results)
+    else:
+        print("\n💬 گفتگوی معمولی تشخیص داده شد...")
 
     print("🤖 در حال تولید پاسخ با هوش مصنوعی...")
     if LLM_PROVIDER == "anthropic":
@@ -262,6 +300,20 @@ def main():
         question = input(f"\n❓ من آماده‌ام {user_name}: ").strip()
         if question.lower() in ("exit", "quit", "خروج"):
             print(f"\nخداحافظ {user_name} 👋 (ساخته شده توسط تیم فنی persian_ai)")
+            break
+        if not question:
+            continue
+
+        try:
+            answer = answer_question(question)
+            print("\n✅ پاسخ آماده شد! در حال باز کردن در مرورگر...\n")
+            show_in_browser(question, answer)
+        except Exception as e:
+            print(f"\n⚠️ خطا رخ داد: {e}")
+
+
+if __name__ == "__main__":
+    main()
             break
         if not question:
             continue
