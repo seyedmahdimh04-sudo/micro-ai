@@ -314,17 +314,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-            break
-        if not question:
-            continue
-
-        try:
-            answer = answer_question(question)
-            print("\n✅ پاسخ آماده شد! در حال باز کردن در مرورگر...\n")
-            show_in_browser(question, answer)
-        except Exception as e:
-            print(f"\n⚠️ خطا رخ داد: {e}")
-
-
-if __name__ == "__main__":
-    main()
