@@ -12,6 +12,7 @@
 """
 
 from flask import Flask, request, render_template_string
+from urllib.parse import quote
 from main import answer_question
 
 app = Flask(__name__)
@@ -109,15 +110,48 @@ PAGE_TEMPLATE = """
             font-size: 13px;
             margin-top: 40px;
         }
+        .tabs {
+            display: flex;
+            gap: 10px;
+            justify-content: center;
+            margin-bottom: 30px;
+        }
+        .tab {
+            padding: 10px 24px;
+            border-radius: 999px;
+            text-decoration: none;
+            color: #ccc;
+            background: #2a2a3d;
+            font-size: 14px;
+        }
+        .tab.active {
+            background: #7dd3fc;
+            color: #1e1e2f;
+            font-weight: bold;
+        }
+        .image-result {
+            text-align: center;
+        }
+        .image-result img {
+            max-width: 100%;
+            border-radius: 14px;
+            margin-top: 10px;
+        }
     </style>
 </head>
 <body>
     <header>
         <h1>🤖 {{ site_name }}</h1>
-        <p>چت‌بات خبری هوشمند — پاسخ بر اساس آخرین اخبار وب</p>
+        <p>چت‌بات خبری هوشمند و ساخت تصویر با هوش مصنوعی</p>
     </header>
 
     <div class="container">
+        <div class="tabs">
+            <a href="/" class="tab {{ 'active' if mode == 'chat' else '' }}">💬 پرسش و پاسخ</a>
+            <a href="/image" class="tab {{ 'active' if mode == 'image' else '' }}">🎨 ساخت تصویر</a>
+        </div>
+
+        {% if mode == 'chat' %}
         <form method="POST" action="/">
             <input type="text" name="question" placeholder="سؤال خودت رو بپرس..." value="{{ question or '' }}" autofocus required>
             <button type="submit">پرسیدن</button>
@@ -130,6 +164,25 @@ PAGE_TEMPLATE = """
             {% else %}
                 <div class="answer">{{ answer }}</div>
             {% endif %}
+        {% endif %}
+
+        {% else %}
+        <form method="POST" action="/image">
+            <input type="text" name="prompt" placeholder="مثلاً: یک گربه فضانورد روی ماه" value="{{ prompt or '' }}" autofocus required>
+            <button type="submit">ساخت تصویر</button>
+        </form>
+
+        {% if prompt %}
+            <div class="question">🎨 {{ prompt }}</div>
+            <div class="image-result">
+                <p style="color:#999; font-size:13px;">⏳ ساخت تصویر ممکن است تا ۲۰ ثانیه طول بکشد...</p>
+                <img src="{{ image_url }}" alt="{{ prompt }}"
+                     onerror="this.onerror=null; this.style.display='none'; document.getElementById('img-error').style.display='block';">
+                <div id="img-error" class="error" style="display:none;">
+                    ⚠️ تصویر بارگذاری نشد. چند ثانیه صبر کن و دوباره امتحان کن، یا پرامپت را ساده‌تر بنویس.
+                </div>
+            </div>
+        {% endif %}
         {% endif %}
     </div>
 
@@ -156,9 +209,33 @@ def index():
     return render_template_string(
         PAGE_TEMPLATE,
         site_name=SITE_NAME,
+        mode="chat",
         question=question,
         answer=answer,
         error=error,
+    )
+
+
+@app.route("/image", methods=["GET", "POST"])
+def image_page():
+    prompt = None
+    image_url = None
+
+    if request.method == "POST":
+        prompt = request.form.get("prompt", "").strip()
+        if prompt:
+            encoded_prompt = quote(prompt)
+            image_url = (
+                f"https://image.pollinations.ai/prompt/{encoded_prompt}"
+                f"?width=768&height=768&nologo=true&seed=42"
+            )
+
+    return render_template_string(
+        PAGE_TEMPLATE,
+        site_name=SITE_NAME,
+        mode="image",
+        prompt=prompt,
+        image_url=image_url,
     )
 
 
