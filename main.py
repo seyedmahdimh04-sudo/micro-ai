@@ -53,52 +53,93 @@ def is_blocked(link: str) -> bool:
     return any(domain in link_lower for domain in BLOCKED_DOMAINS)
 
 
-# کلماتی که نشان می‌دهند سؤال احتمالاً نیاز به جستجوی خبری ندارد (گفتگوی معمولی)
-CASUAL_HINTS = [
+# کلماتی که نشان‌دهنده‌ی سلام و احوال‌پرسی ساده هستند
+GREETING_HINTS = [
     "سلام", "چطوری", "خوبی", "چه خبر", "حالت چطوره", "خداحافظ",
-    "اسمت چیه", "کی هستی", "تو کی هستی", "ساخته شدی", "توسط چه کسی",
-    "توسط کی", "سازنده", "چه کسی ساخت", "ممنون", "مرسی", "متشکرم",
-    "خوشحالم", "شوخی", "جوک", "بلدی", "میتونی", "کمکم کن",
+    "ممنون", "مرسی", "متشکرم", "خوشحالم", "شوخی", "جوک",
+]
+
+# کلماتی که نشان‌دهنده‌ی سؤال درباره‌ی هویت/سازنده‌ی خودِ ربات هستند (باید مشخصاً به خودِ ربات اشاره کنند)
+IDENTITY_HINTS = [
+    "اسمت چیه", "اسمت چیست", "کی هستی", "تو کی هستی", "کی هستی تو", "خودت رو معرفی کن",
+    "سازنده‌ات", "سازندت", "سازنده ات", "کی ساختت", "کی تو رو ساخت",
+    "چه کسی ساختت", "چه کسی تو رو ساخت", "توسط چه کسی ساخته شدی",
+    "توسط کی ساخته شدی", "کی طراحیت کرد", "تو چی هستی",
+]
+
+# کلماتی که نشان‌دهنده‌ی درددل یا حال بد کاربر هستند (نباید جستجوی خبری بشه، باید همدلی بشه)
+EMOTIONAL_HINTS = [
+    "مسخره", "ناراحتم", "ناراحت شدم", "غمگین", "گریه", "افسرده",
+    "تنهام", "تنها شدم", "دلم شکسته", "اذیتم می", "اذیتم کرد",
+    "کسی دوستم نداره", "بی‌کسم", "استرس دارم", "نگرانم", "می‌ترسم",
+    "خسته‌ام", "خسته شدم", "دلم گرفته", "افتضاحه", "بدبختم",
 ]
 
 
 def needs_search(question: str) -> bool:
-    """تشخیص ساده اینکه آیا سؤال نیاز به جستجوی خبری دارد یا صرفاً گفتگوی معمولی است"""
+    """تشخیص اینکه آیا سؤال نیاز به جستجوی خبری دارد یا صرفاً گفتگو/احساسات است"""
     q = question.strip()
     if len(q) < 6:
         return False
     q_lower = q.lower()
-    if any(hint in q_lower for hint in CASUAL_HINTS) and len(q) < 40:
+    # سلام و احوال‌پرسی کوتاه
+    if any(hint in q_lower for hint in GREETING_HINTS) and len(q) < 40:
+        return False
+    # سؤال هویتی
+    if any(hint in q_lower for hint in IDENTITY_HINTS) and len(q) < 60:
+        return False
+    # درددل و حرف احساسی — طول بیشتری هم مجازه چون معمولاً جمله‌ی کاملیه
+    if any(hint in q_lower for hint in EMOTIONAL_HINTS):
         return False
     return True
 
 
-def get_persona_prompt() -> str:
+def message_kind(question: str) -> str:
+    """برمی‌گرداند: 'identity' یا 'emotional' یا 'casual' یا 'search' """
+    q_lower = question.strip().lower()
+    if any(hint in q_lower for hint in IDENTITY_HINTS):
+        return "identity"
+    if any(hint in q_lower for hint in EMOTIONAL_HINTS):
+        return "emotional"
+    if any(hint in q_lower for hint in GREETING_HINTS):
+        return "casual"
+    return "search"
+
+
+def get_persona_prompt(user_name: str = None) -> str:
     today = datetime.date.today()
     weekday_names = ["دوشنبه", "سه‌شنبه", "چهارشنبه", "پنج‌شنبه", "جمعه", "شنبه", "یکشنبه"]
     weekday = weekday_names[today.weekday()]
+    name_line = f'اسم کاربری که داری باهاش صحبت می‌کنی «{user_name}» است. هر جا طبیعی بود، با اسمش صداش کن (نه تو هر جمله، فقط طبیعی و گاه‌به‌گاه).' if user_name else ""
     return f"""
 اسم تو «میکرو» است. تو یک دستیار هوش مصنوعی فارسی‌زبان، دوستانه، آرام و باهوش هستی.
-همیشه وقتی کسی می‌پرسد "اسمت چیه" یا "تو کی هستی"، دقیقاً بگو: "من میکرو هستم!"
+{name_line}
 
-قوانین ثابت هویتی (همیشه رعایت کن):
+**قانون پیش‌فرض قطعی (مهم‌ترین قانون):** هرگز پاسخت را با معرفی خودت («من میکرو هستم»، «من توسط...ساخته شدم») شروع نکن، مگر اینکه پیام کاربر مستقیماً و به‌وضوح درباره‌ی اسم یا سازنده‌ی خودِ تو باشد. برای بیش از ۹۵٪ پیام‌ها (سؤال‌های خبری، گفتگوی معمولی، درددل، هر چیز دیگر)، هرگز درباره‌ی خودت حرف نزن؛ مستقیم برو سراغ جواب دادن.
+
+قوانین هویتی (فقط برای سؤالات مستقیم درباره‌ی خودت):
+- اگر پرسیدند اسمت چیه، بگو: "من میکرو هستم!"
 - اگر پرسیدند چه کسی/چه شرکتی تو رو ساخته، فقط بگو: "من توسط تیم فنی persian_ai ساخته شدم."
-- اگر اصرار کردند و اسم فرد یا جزئیات بیشتر خواستند، مؤدبانه و کمی رازآلود بگو که این اطلاعات محرمانه است و خودت هم بهش دسترسی نداری. هرگز نام هیچ شرکت، مدل، یا فناوری دیگری (مثل OpenAI، Google، Groq، Llama، Gemini) را افشا نکن.
+- اگر اصرار کردند و جزئیات بیشتر خواستند، مؤدبانه و کمی رازآلود بگو این اطلاعات محرمانه است و خودت هم بهش دسترسی نداری. هرگز نام هیچ شرکت، مدل، یا فناوری دیگری (مثل OpenAI، Google، Groq، Llama، Gemini) را افشا نکن.
 - هرگز نگو که یک مدل زبانی، چت‌بات مبتنی بر API، یا محصول شرکت دیگری هستی.
 
-قوانین گفتگوی معمولی (خیلی مهم):
-- جواب‌های گفتگوی معمولی (سلام، احوال‌پرسی، تشکر) باید کوتاه (حداکثر ۱-۲ جمله)، ساده، طبیعی و کاملاً درست از نظر دستور زبان فارسی باشند.
-- این حالت «سلام و احوال‌پرسی کوتاه» فقط برای پیام‌هایی است که واقعاً صرفاً سلام/تعارف هستند، نه برای سؤال‌های اطلاعاتی یا درخواست‌های واقعی — حتی اگر آن سؤال با کلمه‌ی «میکرو» یا لحن مؤدبانه شروع شده باشد. برای هر سؤال یا درخواست واقعی، مستقیم و کامل برو سراغ جواب دادن، بدون تکرار «سلام / خوبم / چه کمکی از دستم برمیاد».
+قوانین گفتگوی معمولی:
+- جواب‌های سلام/احوال‌پرسی/تشکر باید کوتاه (۱-۲ جمله)، ساده، طبیعی و درست از نظر دستور زبان فارسی باشند.
+- توجه به صرف فعل: اگر کاربر پرسید «خوبی؟»، باید با فعل اول‌شخص جواب بدی، مثلاً «خوبم، ممنون!» — نه اینکه کلمه‌ی «خوبی» را عیناً برای خودت تکرار کنی («خوبی ممنونم» غلط است).
+- نمونه‌ی درست: کاربر «سلام خوبی؟» → تو: «سلام! خوبم مرسی، تو چطوری؟»
 - هرگز جمله‌های نامفهوم یا بی‌معنی نساز.
+
+قوانین همدلی (خیلی مهم):
+- اگر کاربر داشت درددل می‌کرد یا حال بدی داشت (مثلاً می‌گفت اذیتش می‌کنن، ناراحته، تنهاست، استرس داره)، هرگز بی‌تفاوت یا سرد جواب نده (مثل «به من چه» یا رد کردن حرفش). با گرمی و همدلی واقعی گوش بده، احساسش را به رسمیت بشناس، و در صورت لزوم به آرامی پیشنهاد بده با یک آدم بزرگ‌تر قابل‌اعتماد (والدین، معلم، مشاور) هم صحبت کنه. تو نمی‌تونی جایگزین کمک واقعی روان‌شناسی بشی، ولی می‌تونی یه شنونده‌ی گرم و حمایتگر باشی.
 
 قوانین زبان (سخت‌گیرانه رعایت کن):
 - کل پاسخ باید ۱۰۰٪ به زبان فارسی و با الفبای فارسی نوشته شود.
-- هیچ کلمه، حرف، یا عبارت انگلیسی/چینی/عربی/لاتین وسط جمله نیاور — حتی یک کلمه. اگر اسم یک شخص، شرکت، یا اصطلاح خارجی لازم بود، آن را با حروف فارسی بنویس (مثلاً بنویس «گوگل» نه Google).
+- هیچ کلمه، حرف، یا عبارت انگلیسی/چینی/عربی/لاتین وسط جمله نیاور — حتی یک کلمه. اسم‌های خارجی را با حروف فارسی بنویس (مثلاً «گوگل» نه Google).
 - عدد می‌تواند فارسی یا انگلیسی باشد، مشکلی ندارد، اما هیچ کلمه‌ی نوشتاری غیرفارسی مجاز نیست.
 
 قوانین خبری:
 - اگر سؤال نیاز به اطلاعات به‌روز یا خبری دارد، از نتایج جستجوی داده‌شده استفاده کن.
-- امروز {weekday}، {today.strftime('%Y/%m/%d')} میلادی است. همیشه بر این اساس قضاوت کن که چه خبری «جدید» یا «قدیمی» است. اگر تاریخ منبع خیلی قدیمی بود (بیش از چند ماه)، به کاربر بگو که این آخرین خبر موجود بوده و ممکن است به‌روزتر هم وجود داشته باشد.
+- امروز {weekday}، {today.strftime('%Y/%m/%d')} میلادی است. بر این اساس قضاوت کن چه خبری «جدید» یا «قدیمی» است. اگر تاریخ منبع خیلی قدیمی بود، به کاربر بگو این آخرین خبر موجود بوده و ممکن است به‌روزتر هم وجود داشته باشد.
 - بی‌طرف، مؤدب و صادق باش. اگر خبر مرتبطی در نتایج نبود، صادقانه بگو خبری پیدا نشد.
 - در پایان پاسخ‌های خبری، شماره منابع استفاده‌شده را داخل قلاب مثل [1] ذکر کن.
 """
@@ -159,7 +200,58 @@ def has_latin_words(text: str) -> bool:
     return bool(re.search(r"[a-zA-Z]{2,}", text))
 
 
-def ask_openai(question: str, context: str) -> str:
+# کلمات کلیدی موضوعی (نه صریح) که احتمال درخواست محتوای بزرگسال را بالا می‌برند
+# این‌ها فقط اسم موضوع هستند، نه عبارات صریح؛ صرفاً به‌عنوان یک لایه‌ی پشتیبانِ سریع کنار طبقه‌بند هوش مصنوعی استفاده می‌شوند
+ADULT_TOPIC_HINTS = [
+    "داستان سکسی", "متن سکسی", "چت سکسی", "عکس سکسی", "تصویر سکسی",
+    "محتوای پورن", "فیلم پورن", "برهنه بنویس", "رابطه جنسی با جزئیات",
+]
+
+
+def moderate_content(question: str) -> bool:
+    """
+    بررسی می‌کند که آیا پیام کاربر درخواست صریح محتوای جنسی/غیراخلاقی است.
+    برمی‌گرداند True فقط اگر واقعاً و به‌وضوح چنین درخواستی باشد (نه سؤالات پزشکی/آموزشی/کنجکاوی معمولی).
+    اگر بررسی به هر دلیلی خطا داد، fail-open می‌کند (کاربر عادی مسدود نشود).
+    """
+    q_lower = question.strip().lower()
+
+    # لایه‌ی سریع: اگر عبارت موضوعی صریح و بدون ابهام دیده شد، مستقیم مسدود کن
+    if any(hint in q_lower for hint in ADULT_TOPIC_HINTS):
+        return True
+
+    if LLM_PROVIDER != "openai" or not OPENAI_API_KEY:
+        return False  # طبقه‌بند هوشمند فعلاً فقط برای مسیر گروک/OpenAI پیاده‌سازی شده
+
+    try:
+        from openai import OpenAI
+        client = OpenAI(api_key=OPENAI_API_KEY, base_url="https://api.groq.com/openai/v1")
+
+        mod_prompt = (
+            "تو یک فیلتر امنیتی محتوا هستی. کارت این است که فقط با یک کلمه جواب بدهی.\n"
+            "بررسی کن آیا پیام کاربر یک درخواست صریح و آشکار برای تولید محتوای جنسی/اروتیک/غیراخلاقی است.\n"
+            "سؤالات پزشکی، سلامت جنسی عمومی، آموزشی، یا کنجکاوی‌های معمولی و بی‌ضرر هرگز نقض محسوب نمی‌شوند.\n"
+            "اگر پیام واقعاً و به‌وضوح چنین درخواستی بود، فقط دقیقاً همین کلمه را بنویس: بله\n"
+            "در غیر این صورت (از جمله هر شک یا ابهام)، فقط دقیقاً همین کلمه را بنویس: خیر\n"
+            "هیچ توضیح، علامت، یا کلمه‌ی اضافه ننویس."
+        )
+        response = client.chat.completions.create(
+            model="llama-3.1-8b-instant",
+            temperature=0,
+            max_tokens=10,
+            messages=[
+                {"role": "system", "content": mod_prompt},
+                {"role": "user", "content": question},
+            ],
+        )
+        result = (response.choices[0].message.content or "").strip()
+        return "بله" in result
+    except Exception as e:
+        print(f"⚠️ خطا در فیلتر محتوا (fail-open): {e}")
+        return False
+
+
+def ask_openai(question: str, context: str, user_name: str = None) -> str:
     from openai import OpenAI
 
     # اینجا کد هوشمند شده: کلید گروک (gsk_...) رو برمی‌داره و به سرور رایگان گروک وصل میشه
@@ -168,16 +260,19 @@ def ask_openai(question: str, context: str) -> str:
         base_url="https://api.groq.com/openai/v1"
     )
 
-    system_prompt = get_persona_prompt()
+    system_prompt = get_persona_prompt(user_name)
+    kind = message_kind(question)
 
     if context:
         user_prompt = f"سؤال کاربر: {question}\n\nنتایج جستجو:\n{context}\n\nبر اساس نتایج بالا (در صورت نیاز) پاسخ بده:"
+    elif kind == "emotional":
+        user_prompt = f"پیام کاربر: {question}\n\n(کاربر داره درددل می‌کنه یا حال بدی داره. با همدلی و گرمی جواب بده، طبق قوانین همدلی.)"
     else:
         user_prompt = f"سؤال کاربر: {question}\n\n(این یک گفتگوی معمولی است، نیازی به جستجو نیست، طبیعی جواب بده.)"
 
     def _call(extra_reminder: str = "") -> str:
         messages = [{"role": "system", "content": system_prompt + extra_reminder}]
-        if not context:
+        if kind == "casual":
             # این مثال فقط برای یادگیری لحن سلام‌کردن است، نه الگوی همه‌ی پاسخ‌ها
             messages.append({"role": "user", "content": "سلام میکرو چطوری؟"})
             messages.append({"role": "assistant", "content": "سلام! خوبم، ممنون. تو چطوری؟"})
@@ -198,14 +293,17 @@ def ask_openai(question: str, context: str) -> str:
     return answer
 
 
-def ask_anthropic(question: str, context: str) -> str:
+def ask_anthropic(question: str, context: str, user_name: str = None) -> str:
     import anthropic
     client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
-    system_prompt = get_persona_prompt()
+    system_prompt = get_persona_prompt(user_name)
+    kind = message_kind(question)
 
     if context:
         user_prompt = f"سؤال کاربر: {question}\n\nنتایج جستجو:\n{context}\n\nبر اساس نتایج بالا (در صورت نیاز) پاسخ بده:"
+    elif kind == "emotional":
+        user_prompt = f"پیام کاربر: {question}\n\n(کاربر داره درددل می‌کنه یا حال بدی داره. با همدلی و گرمی جواب بده.)"
     else:
         user_prompt = f"سؤال کاربر: {question}\n\n(این یک گفتگوی معمولی است، نیازی به جستجو نیست، طبیعی جواب بده.)"
 
@@ -218,12 +316,15 @@ def ask_anthropic(question: str, context: str) -> str:
     return message.content[0].text
 
 
-def ask_ollama(question: str, context: str) -> str:
+def ask_ollama(question: str, context: str, user_name: str = None) -> str:
     """استفاده از مدل رایگان و محلی از طریق Ollama (بدون نیاز به کلید API یا پرداخت)"""
-    system_prompt = get_persona_prompt()
+    system_prompt = get_persona_prompt(user_name)
+    kind = message_kind(question)
 
     if context:
         user_prompt = f"سؤال کاربر: {question}\n\nنتایج جستجو:\n{context}\n\nبر اساس نتایج بالا (در صورت نیاز) پاسخ بده:"
+    elif kind == "emotional":
+        user_prompt = f"پیام کاربر: {question}\n\n(کاربر داره درددل می‌کنه یا حال بدی داره. با همدلی و گرمی جواب بده.)"
     else:
         user_prompt = f"سؤال کاربر: {question}\n\n(این یک گفتگوی معمولی است، نیازی به جستجو نیست، طبیعی جواب بده.)"
 
@@ -277,7 +378,7 @@ def show_in_browser(question: str, answer: str):
     webbrowser.open(f"file://{path}")
 
 
-def answer_question(question: str) -> str:
+def answer_question(question: str, user_name: str = None) -> str:
     context = ""
     if needs_search(question):
         print("\n📰 در حال جستجوی اخبار...")
@@ -285,15 +386,15 @@ def answer_question(question: str) -> str:
         if results:
             context = build_context(results)
     else:
-        print("\n💬 گفتگوی معمولی تشخیص داده شد...")
+        print("\n💬 گفتگوی معمولی/احساسی تشخیص داده شد...")
 
     print("🤖 در حال تولید پاسخ با هوش مصنوعی...")
     if LLM_PROVIDER == "anthropic":
-        return ask_anthropic(question, context)
+        return ask_anthropic(question, context, user_name)
     elif LLM_PROVIDER == "openai":
-        return ask_openai(question, context)
+        return ask_openai(question, context, user_name)
     else:
-        return ask_ollama(question, context)
+        return ask_ollama(question, context, user_name)
 
 
 def main():
@@ -332,7 +433,7 @@ def main():
             continue
 
         try:
-            answer = answer_question(question)
+            answer = answer_question(question, user_name)
             print("\n✅ پاسخ آماده شد! در حال باز کردن در مرورگر...\n")
             show_in_browser(question, answer)
         except Exception as e:

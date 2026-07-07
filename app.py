@@ -1,8 +1,8 @@
 """
 وب‌سایت محلی چت‌بات خبری «میکرو»
 ------------------------------------
-این فایل یک رابط وب ساده می‌سازد تا به‌جای تایپ سؤال در ترمینال،
-بتوانید از طریق مرورگر با چت‌بات صحبت کنید.
+این فایل یک رابط وب می‌سازد تا بتوانید از طریق مرورگر با چت‌بات صحبت کنید،
+تصویر بسازید، و در صورت داشتن رمز مدیریتی، بدون محدودیت از همه‌ی ابزارها استفاده کنید.
 
 اجرا:
     python app.py
@@ -11,14 +11,280 @@
     http://127.0.0.1:5000
 """
 
-from flask import Flask, request, render_template_string
+import os
+import time
+import secrets
+from datetime import date
+from collections import defaultdict
+from flask import Flask, request, render_template_string, session, redirect, url_for
 from urllib.parse import quote
-from main import answer_question
+from main import answer_question, moderate_content
 
 app = Flask(__name__)
+# کلید امن برای session (روی Render حتماً به‌عنوان متغیر محیطی SECRET_KEY تنظیمش کن)
+app.secret_key = os.getenv("SECRET_KEY", secrets.token_hex(16))
 
 SITE_NAME = "هوش مصنوعی میکرو"
 
+# رمز مخصوص سازنده برای باز کردن پنل مدیریت و رفع محدودیت‌ها.
+# پیشنهاد می‌شود این مقدار را روی Render به‌عنوان متغیر محیطی ADMIN_SECRET ست کنید
+# تا داخل کد عمومی گیت‌هاب دیده نشود؛ فعلاً مقدار پیش‌فرض همان رمزیه که خواستید.
+ADMIN_SECRET = os.getenv("ADMIN_SECRET", "seyedmahdi_amirmz")
+
+# محدودیت روزانه‌ی هر کاربر برای ابزار «مدل تصور» (تصویرساز رایگان)
+DAILY_LIMIT_FREE_IMAGE = 5
+
+# مسدودسازی به‌خاطر استفاده‌ی نادرست از چت‌بات
+BAN_DURATION_SECONDS = 3 * 24 * 60 * 60  # 3 روز
+UNBAN_CODE = os.getenv("UNBAN_CODE", "139293")
+banned_until = {}  # user_id -> زمان پایان مسدودیت (timestamp)
+
+# ---------------------------------------------------------------------------
+# آمار ساده‌ی کاربران (در حافظه؛ با هر ری‌استارت سرور صفر می‌شود چون هاست رایگانه)
+# ---------------------------------------------------------------------------
+monthly_users = set()          # شناسه‌های یکتای کاربرانی که این ماه پیام دادند
+online_users = {}              # user_id -> آخرین زمان فعالیت
+image_usage = defaultdict(lambda: {"date": None, "count": 0})  # user_id -> مصرف روزانه تصویر
+
+ONLINE_WINDOW_SECONDS = 90     # کاربر تا ۹۰ ثانیه بعد از آخرین حرکت "آنلاین" حساب می‌شود
+ONLINE_LIMIT = 5               # از این تعداد کاربر آنلاین بیشتر، سرور "شلوغ" اعلام می‌شود
+
+
+def get_user_id():
+    """شناسه‌ی یکتا برای هر کاربر (بر اساس session)"""
+    if "uid" not in session:
+        session["uid"] = secrets.token_hex(8)
+    return session["uid"]
+
+
+def track_activity():
+    """ثبت بازدید کاربر برای آمار ماهانه و آنلاین"""
+    uid = get_user_id()
+    monthly_users.add(f"{date.today().strftime('%Y-%m')}:{uid}")
+    online_users[uid] = time.time()
+
+
+def count_online():
+    now = time.time()
+    stale = [u for u, t in online_users.items() if now - t > ONLINE_WINDOW_SECONDS]
+    for u in stale:
+        del online_users[u]
+    return len(online_users)
+
+
+def count_monthly():
+    prefix = date.today().strftime('%Y-%m') + ":"
+    return len([u for u in monthly_users if u.startswith(prefix)])
+
+
+def is_admin() -> bool:
+    return session.get("is_admin", False)
+
+
+def check_daily_limit(tool_key: str, limit: int) -> bool:
+    """برمی‌گرداند True اگر کاربر هنوز مجاز به استفاده باشد"""
+    if is_admin():
+        return True
+    uid = get_user_id()
+    today_str = date.today().isoformat()
+    usage = image_usage[f"{tool_key}:{uid}"]
+    if usage["date"] != today_str:
+        usage["date"] = today_str
+        usage["count"] = 0
+    return usage["count"] < limit
+
+
+def increment_daily_usage(tool_key: str):
+    if is_admin():
+        return
+    uid = get_user_id()
+    today_str = date.today().isoformat()
+    usage = image_usage[f"{tool_key}:{uid}"]
+    if usage["date"] != today_str:
+        usage["date"] = today_str
+        usage["count"] = 0
+    usage["count"] += 1
+
+
+def remaining_daily(tool_key: str, limit: int) -> int:
+    if is_admin():
+        return -1  # یعنی نامحدود
+    uid = get_user_id()
+    today_str = date.today().isoformat()
+    usage = image_usage[f"{tool_key}:{uid}"]
+    if usage["date"] != today_str:
+        return limit
+    return max(0, limit - usage["count"])
+
+
+def is_banned() -> bool:
+    if is_admin():
+        return False
+    uid = get_user_id()
+    until = banned_until.get(uid)
+    if until and time.time() < until:
+        return True
+    if until:
+        del banned_until[uid]
+    return False
+
+
+def ban_seconds_left() -> int:
+    uid = get_user_id()
+    until = banned_until.get(uid)
+    if not until:
+        return 0
+    return max(0, int(until - time.time()))
+
+
+def ban_user():
+    uid = get_user_id()
+    banned_until[uid] = time.time() + BAN_DURATION_SECONDS
+
+
+def try_unban(code: str) -> bool:
+    if code and code.strip() == UNBAN_CODE:
+        uid = get_user_id()
+        banned_until.pop(uid, None)
+        return True
+    return False
+
+
+# ---------------------------------------------------------------------------
+# قالب صفحه‌ی خوش‌آمدگویی (قبل از ورود به چت)
+# ---------------------------------------------------------------------------
+WELCOME_TEMPLATE = """
+<!DOCTYPE html>
+<html dir="rtl" lang="fa">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ site_name }}</title>
+    <style>
+        body {
+            font-family: Tahoma, 'Segoe UI', sans-serif;
+            background: linear-gradient(135deg, #1e1e2f, #2a2a4a);
+            color: #eee;
+            margin: 0;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .box {
+            text-align: center;
+            padding: 40px;
+            max-width: 420px;
+        }
+        .box h1 { font-size: 26px; color: #7dd3fc; margin-bottom: 6px; }
+        .box p { color: #999; margin-bottom: 26px; }
+        input[type=text] {
+            width: 100%;
+            padding: 14px 18px;
+            border-radius: 10px;
+            border: 1px solid #444;
+            background: #2a2a3d;
+            color: #eee;
+            font-size: 16px;
+            margin-bottom: 14px;
+            box-sizing: border-box;
+            text-align: center;
+        }
+        button {
+            width: 100%;
+            padding: 14px;
+            border-radius: 10px;
+            border: none;
+            background: #7dd3fc;
+            color: #1e1e2f;
+            font-weight: bold;
+            font-size: 16px;
+            cursor: pointer;
+        }
+        button:hover { background: #5cc4f5; }
+    </style>
+</head>
+<body>
+    <div class="box">
+        <h1>🤖 {{ site_name }}</h1>
+        <p>سلام! اسمت چیه؟</p>
+        <form method="POST" action="/start">
+            <input type="text" name="user_name" placeholder="اسمت رو بنویس..." autofocus required>
+            <button type="submit">شروع گفتگو</button>
+        </form>
+    </div>
+</body>
+</html>
+"""
+
+BANNED_TEMPLATE = """
+<!DOCTYPE html>
+<html dir="rtl" lang="fa">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ site_name }}</title>
+    <style>
+        body {
+            font-family: Tahoma, 'Segoe UI', sans-serif;
+            background: #1a0f14;
+            color: #eee;
+            margin: 0;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .box {
+            text-align: center;
+            padding: 40px;
+            max-width: 460px;
+        }
+        .icon { font-size: 48px; margin-bottom: 10px; }
+        .box h1 { font-size: 22px; color: #ff8fa3; margin-bottom: 14px; }
+        .box p { color: #ddb0b8; line-height: 1.8; margin-bottom: 22px; }
+        .timer { color: #999; font-size: 13px; margin-bottom: 26px; }
+        form { display: flex; gap: 10px; }
+        input[type=text] {
+            flex: 1;
+            padding: 14px 18px;
+            border-radius: 10px;
+            border: 1px solid #542; 
+            background: #2a161c;
+            color: #eee;
+            font-size: 14px;
+            box-sizing: border-box;
+        }
+        button {
+            padding: 14px 22px;
+            border-radius: 10px;
+            border: none;
+            background: #7dd3fc;
+            color: #1e1e2f;
+            font-weight: bold;
+            font-size: 14px;
+            cursor: pointer;
+        }
+        button:hover { background: #5cc4f5; }
+    </style>
+</head>
+<body>
+    <div class="box">
+        <div class="icon">⛔</div>
+        <h1>به دلیل استفاده نادرست از چت‌بات،<br>تا ۳ روز نمی‌توانید از سرویس‌های میکرو استفاده کنید!</h1>
+        <p class="timer">زمان باقی‌مانده تا رفع مسدودی: تقریباً {{ ban_hours }} ساعت</p>
+        <form method="POST" action="/unban">
+            <input type="text" name="unban_code" placeholder="چنانچه ادمین کد ورود را در هر صورت داده است، وارد کنید">
+            <button type="submit">ثبت کد</button>
+        </form>
+    </div>
+</body>
+</html>
+"""
+
+# ---------------------------------------------------------------------------
+# قالب اصلی سایت (چت، تصویر، پنل مدیریت)
+# ---------------------------------------------------------------------------
 PAGE_TEMPLATE = """
 <!DOCTYPE html>
 <html dir="rtl" lang="fa">
@@ -36,9 +302,22 @@ PAGE_TEMPLATE = """
             padding: 0;
             min-height: 100vh;
         }
+        .topbar {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 10px 20px;
+            font-size: 12px;
+            color: #888;
+        }
+        .topbar span.badge {
+            background: #2a2a3d;
+            padding: 4px 12px;
+            border-radius: 999px;
+        }
         header {
             text-align: center;
-            padding: 30px 20px 10px;
+            padding: 10px 20px 10px;
         }
         header h1 {
             font-size: 28px;
@@ -55,10 +334,10 @@ PAGE_TEMPLATE = """
             margin: 20px auto;
             padding: 0 20px 60px;
         }
-        form {
+        form.main-form {
             display: flex;
             gap: 10px;
-            margin-bottom: 30px;
+            margin-bottom: 16px;
         }
         input[type=text] {
             flex: 1;
@@ -93,16 +372,16 @@ PAGE_TEMPLATE = """
             line-height: 1.9;
             font-size: 16px;
         }
-        .loading {
-            text-align: center;
-            color: #999;
-            padding: 20px;
-        }
         .error {
             background: #4a1e2a;
             color: #ffb3c0;
             padding: 16px;
             border-radius: 10px;
+        }
+        .limit-note {
+            color: #999;
+            font-size: 13px;
+            margin-bottom: 14px;
         }
         footer {
             text-align: center;
@@ -114,7 +393,8 @@ PAGE_TEMPLATE = """
             display: flex;
             gap: 10px;
             justify-content: center;
-            margin-bottom: 30px;
+            margin-bottom: 24px;
+            flex-wrap: wrap;
         }
         .tab {
             padding: 10px 24px;
@@ -129,30 +409,45 @@ PAGE_TEMPLATE = """
             color: #1e1e2f;
             font-weight: bold;
         }
-        .image-result {
-            text-align: center;
-        }
+        .image-result { text-align: center; }
         .image-result img {
             max-width: 100%;
             border-radius: 14px;
             margin-top: 10px;
         }
+        .admin-badge {
+            background: #22c55e;
+            color: #06210f;
+            padding: 3px 10px;
+            border-radius: 999px;
+            font-size: 11px;
+            font-weight: bold;
+            margin-right: 6px;
+        }
     </style>
 </head>
 <body>
+    <div class="topbar">
+        <span class="badge">👥 کاربران این ماه: {{ monthly_count }}</span>
+        <span class="badge">🟢 آنلاین: {{ online_count }}</span>
+    </div>
+
     <header>
-        <h1>🤖 {{ site_name }}</h1>
-        <p>چت‌بات خبری هوشمند و ساخت تصویر با هوش مصنوعی</p>
+        <h1>🤖 {{ site_name }} {% if admin %}<span class="admin-badge">پنل مدیریت</span>{% endif %}</h1>
+        <p>{{ ('دیگه چی می‌خوای ' + user_name + '؟ امر امرِ شماست، من آماده‌ام 👑') if admin else 'چت‌بات خبری هوشمند و ساخت تصویر با هوش مصنوعی' }}</p>
     </header>
 
     <div class="container">
+        {% if busy %}
+            <div class="error">🚦 در این لحظه سرورها شلوغ می‌باشد و امکان ارائه خدمات مقدور نیست! از صبر شما سپاسگزاریم.</div>
+        {% else %}
         <div class="tabs">
             <a href="/" class="tab {{ 'active' if mode == 'chat' else '' }}">💬 پرسش و پاسخ</a>
-            <a href="/image" class="tab {{ 'active' if mode == 'image' else '' }}">🎨 ساخت تصویر</a>
+            <a href="/image" class="tab {{ 'active' if mode == 'image' else '' }}">🖼️ مدل تصور (تصویرساز)</a>
         </div>
 
         {% if mode == 'chat' %}
-        <form method="POST" action="/">
+        <form class="main-form" method="POST" action="/">
             <input type="text" name="question" placeholder="سؤال خودت رو بپرس..." value="{{ question or '' }}" autofocus required>
             <button type="submit">پرسیدن</button>
         </form>
@@ -167,21 +462,33 @@ PAGE_TEMPLATE = """
         {% endif %}
 
         {% else %}
-        <form method="POST" action="/image">
+        <div class="limit-note">
+            {% if admin %}
+                ✨ به‌عنوان مدیر، محدودیتی برای تو وجود نداره.
+            {% else %}
+                باقی‌مانده‌ی امروز: {{ remaining }} از {{ limit }} تصویر
+            {% endif %}
+        </div>
+        {% if remaining == 0 and not admin %}
+            <div class="error">⚠️ سقف روزانه‌ی «مدل تصور» تموم شده. فردا دوباره امتحان کن.</div>
+        {% else %}
+        <form class="main-form" method="POST" action="/image">
             <input type="text" name="prompt" placeholder="مثلاً: یک گربه فضانورد روی ماه" value="{{ prompt or '' }}" autofocus required>
             <button type="submit">ساخت تصویر</button>
         </form>
+        {% endif %}
 
-        {% if prompt %}
-            <div class="question">🎨 {{ prompt }}</div>
+        {% if prompt and image_url %}
+            <div class="question">🖼️ {{ prompt }}</div>
             <div class="image-result">
                 <p style="color:#999; font-size:13px;">⏳ ساخت تصویر ممکن است تا ۲۰ ثانیه طول بکشد...</p>
                 <img src="{{ image_url }}" alt="{{ prompt }}"
                      onerror="this.onerror=null; this.style.display='none'; document.getElementById('img-error').style.display='block';">
                 <div id="img-error" class="error" style="display:none;">
-                    ⚠️ تصویر بارگذاری نشد. چند ثانیه صبر کن و دوباره امتحان کن، یا پرامپت را ساده‌تر بنویس.
+                    ⚠️ تصویر بارگذاری نشد. چند ثانیه صبر کن و دوباره امتحان کن.
                 </div>
             </div>
+        {% endif %}
         {% endif %}
         {% endif %}
     </div>
@@ -192,20 +499,47 @@ PAGE_TEMPLATE = """
 """
 
 
-@app.route("/", methods=["GET", "POST"])
-def index():
-    question = None
-    answer = None
-    error = None
+@app.before_request
+def _track():
+    if request.endpoint not in ("static",):
+        track_activity()
 
-    if request.method == "POST":
-        question = request.form.get("question", "").strip()
-        if question:
-            try:
-                answer = answer_question(question)
-            except Exception as e:
-                error = str(e)
 
+def _server_busy() -> bool:
+    return count_online() > ONLINE_LIMIT and not is_admin()
+
+
+def _banned_response():
+    return render_template_string(
+        BANNED_TEMPLATE,
+        site_name=SITE_NAME,
+        ban_hours=max(1, ban_seconds_left() // 3600),
+    )
+
+
+@app.route("/", methods=["GET"])
+def welcome_or_chat():
+    if is_banned():
+        return _banned_response()
+    if "user_name" not in session:
+        return render_template_string(WELCOME_TEMPLATE, site_name=SITE_NAME)
+    return render_chat()
+
+
+@app.route("/start", methods=["POST"])
+def start():
+    name = request.form.get("user_name", "").strip()
+    if name:
+        # رمز مخصوص سازنده: اگه دقیقاً همین رو به‌جای اسم بزنه، پنل مدیریت باز می‌شه
+        if ADMIN_SECRET and name == ADMIN_SECRET:
+            session["is_admin"] = True
+            session["user_name"] = "سازنده"
+        else:
+            session["user_name"] = name
+    return redirect(url_for("welcome_or_chat"))
+
+
+def render_chat(question=None, answer=None, error=None):
     return render_template_string(
         PAGE_TEMPLATE,
         site_name=SITE_NAME,
@@ -213,22 +547,68 @@ def index():
         question=question,
         answer=answer,
         error=error,
+        admin=is_admin(),
+        user_name=session.get("user_name", ""),
+        monthly_count=count_monthly(),
+        online_count=count_online(),
+        busy=_server_busy(),
+        banned=is_banned(),
+        ban_hours=max(1, ban_seconds_left() // 3600),
     )
+
+
+@app.route("/", methods=["POST"])
+def index_post():
+    if is_banned():
+        return _banned_response()
+    if "user_name" not in session:
+        return redirect(url_for("welcome_or_chat"))
+    if _server_busy():
+        return render_chat()
+
+    question = request.form.get("question", "").strip()
+    answer = None
+    error = None
+    if question:
+        if moderate_content(question):
+            ban_user()
+            return _banned_response()
+        try:
+            answer = answer_question(question, session.get("user_name"))
+        except Exception as e:
+            error = str(e)
+    return render_chat(question=question, answer=answer, error=error)
+
+
+@app.route("/unban", methods=["POST"])
+def unban():
+    code = request.form.get("unban_code", "")
+    try_unban(code)
+    return redirect(url_for("welcome_or_chat"))
 
 
 @app.route("/image", methods=["GET", "POST"])
 def image_page():
+    if is_banned():
+        return _banned_response()
+    if "user_name" not in session:
+        return redirect(url_for("welcome_or_chat"))
+
     prompt = None
     image_url = None
+    busy = _server_busy()
 
-    if request.method == "POST":
+    if request.method == "POST" and not busy:
         prompt = request.form.get("prompt", "").strip()
-        if prompt:
+        if prompt and check_daily_limit("free_image", DAILY_LIMIT_FREE_IMAGE):
             encoded_prompt = quote(prompt)
             image_url = (
                 f"https://image.pollinations.ai/prompt/{encoded_prompt}"
                 f"?width=768&height=768&nologo=true&seed=42"
             )
+            increment_daily_usage("free_image")
+        elif prompt:
+            prompt = None  # سقف تموم شده، پرامپت رو نشون نده
 
     return render_template_string(
         PAGE_TEMPLATE,
@@ -236,12 +616,18 @@ def image_page():
         mode="image",
         prompt=prompt,
         image_url=image_url,
+        admin=is_admin(),
+        user_name=session.get("user_name", ""),
+        monthly_count=count_monthly(),
+        online_count=count_online(),
+        busy=busy,
+        limit=DAILY_LIMIT_FREE_IMAGE,
+        remaining=remaining_daily("free_image", DAILY_LIMIT_FREE_IMAGE),
     )
 
 
 if __name__ == "__main__":
-    import os as _os
-    port = int(_os.environ.get("PORT", 5000))
+    port = int(os.environ.get("PORT", 5000))
     print("=" * 50)
     print(f"🌐 {SITE_NAME} در حال اجراست...")
     print("=" * 50)
