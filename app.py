@@ -18,7 +18,7 @@ from datetime import date
 from collections import defaultdict
 from flask import Flask, request, render_template_string, session, redirect, url_for
 from urllib.parse import quote
-from main import answer_question, moderate_content
+from main import answer_question
 
 app = Flask(__name__)
 # کلید امن برای session (روی Render حتماً به‌عنوان متغیر محیطی SECRET_KEY تنظیمش کن)
@@ -33,11 +33,6 @@ ADMIN_SECRET = os.getenv("ADMIN_SECRET", "seyedmahdi_amirmz")
 
 # محدودیت روزانه‌ی هر کاربر برای ابزار «مدل تصور» (تصویرساز رایگان)
 DAILY_LIMIT_FREE_IMAGE = 5
-
-# مسدودسازی به‌خاطر استفاده‌ی نادرست از چت‌بات
-BAN_DURATION_SECONDS = 3 * 24 * 60 * 60  # 3 روز
-UNBAN_CODE = os.getenv("UNBAN_CODE", "139293")
-banned_until = {}  # user_id -> زمان پایان مسدودیت (timestamp)
 
 # ---------------------------------------------------------------------------
 # آمار ساده‌ی کاربران (در حافظه؛ با هر ری‌استارت سرور صفر می‌شود چون هاست رایگانه)
@@ -117,39 +112,6 @@ def remaining_daily(tool_key: str, limit: int) -> int:
     return max(0, limit - usage["count"])
 
 
-def is_banned() -> bool:
-    if is_admin():
-        return False
-    uid = get_user_id()
-    until = banned_until.get(uid)
-    if until and time.time() < until:
-        return True
-    if until:
-        del banned_until[uid]
-    return False
-
-
-def ban_seconds_left() -> int:
-    uid = get_user_id()
-    until = banned_until.get(uid)
-    if not until:
-        return 0
-    return max(0, int(until - time.time()))
-
-
-def ban_user():
-    uid = get_user_id()
-    banned_until[uid] = time.time() + BAN_DURATION_SECONDS
-
-
-def try_unban(code: str) -> bool:
-    if code and code.strip() == UNBAN_CODE:
-        uid = get_user_id()
-        banned_until.pop(uid, None)
-        return True
-    return False
-
-
 # ---------------------------------------------------------------------------
 # قالب صفحه‌ی خوش‌آمدگویی (قبل از ورود به چت)
 # ---------------------------------------------------------------------------
@@ -211,71 +173,6 @@ WELCOME_TEMPLATE = """
         <form method="POST" action="/start">
             <input type="text" name="user_name" placeholder="اسمت رو بنویس..." autofocus required>
             <button type="submit">شروع گفتگو</button>
-        </form>
-    </div>
-</body>
-</html>
-"""
-
-BANNED_TEMPLATE = """
-<!DOCTYPE html>
-<html dir="rtl" lang="fa">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{{ site_name }}</title>
-    <style>
-        body {
-            font-family: Tahoma, 'Segoe UI', sans-serif;
-            background: #1a0f14;
-            color: #eee;
-            margin: 0;
-            min-height: 100vh;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-        }
-        .box {
-            text-align: center;
-            padding: 40px;
-            max-width: 460px;
-        }
-        .icon { font-size: 48px; margin-bottom: 10px; }
-        .box h1 { font-size: 22px; color: #ff8fa3; margin-bottom: 14px; }
-        .box p { color: #ddb0b8; line-height: 1.8; margin-bottom: 22px; }
-        .timer { color: #999; font-size: 13px; margin-bottom: 26px; }
-        form { display: flex; gap: 10px; }
-        input[type=text] {
-            flex: 1;
-            padding: 14px 18px;
-            border-radius: 10px;
-            border: 1px solid #542; 
-            background: #2a161c;
-            color: #eee;
-            font-size: 14px;
-            box-sizing: border-box;
-        }
-        button {
-            padding: 14px 22px;
-            border-radius: 10px;
-            border: none;
-            background: #7dd3fc;
-            color: #1e1e2f;
-            font-weight: bold;
-            font-size: 14px;
-            cursor: pointer;
-        }
-        button:hover { background: #5cc4f5; }
-    </style>
-</head>
-<body>
-    <div class="box">
-        <div class="icon">⛔</div>
-        <h1>به دلیل استفاده نادرست از چت‌بات،<br>تا ۳ روز نمی‌توانید از سرویس‌های میکرو استفاده کنید!</h1>
-        <p class="timer">زمان باقی‌مانده تا رفع مسدودی: تقریباً {{ ban_hours }} ساعت</p>
-        <form method="POST" action="/unban">
-            <input type="text" name="unban_code" placeholder="چنانچه ادمین کد ورود را در هر صورت داده است، وارد کنید">
-            <button type="submit">ثبت کد</button>
         </form>
     </div>
 </body>
@@ -509,18 +406,8 @@ def _server_busy() -> bool:
     return count_online() > ONLINE_LIMIT and not is_admin()
 
 
-def _banned_response():
-    return render_template_string(
-        BANNED_TEMPLATE,
-        site_name=SITE_NAME,
-        ban_hours=max(1, ban_seconds_left() // 3600),
-    )
-
-
 @app.route("/", methods=["GET"])
 def welcome_or_chat():
-    if is_banned():
-        return _banned_response()
     if "user_name" not in session:
         return render_template_string(WELCOME_TEMPLATE, site_name=SITE_NAME)
     return render_chat()
@@ -552,15 +439,11 @@ def render_chat(question=None, answer=None, error=None):
         monthly_count=count_monthly(),
         online_count=count_online(),
         busy=_server_busy(),
-        banned=is_banned(),
-        ban_hours=max(1, ban_seconds_left() // 3600),
     )
 
 
 @app.route("/", methods=["POST"])
 def index_post():
-    if is_banned():
-        return _banned_response()
     if "user_name" not in session:
         return redirect(url_for("welcome_or_chat"))
     if _server_busy():
@@ -570,9 +453,6 @@ def index_post():
     answer = None
     error = None
     if question:
-        if moderate_content(question):
-            ban_user()
-            return _banned_response()
         try:
             answer = answer_question(question, session.get("user_name"))
         except Exception as e:
@@ -580,17 +460,8 @@ def index_post():
     return render_chat(question=question, answer=answer, error=error)
 
 
-@app.route("/unban", methods=["POST"])
-def unban():
-    code = request.form.get("unban_code", "")
-    try_unban(code)
-    return redirect(url_for("welcome_or_chat"))
-
-
 @app.route("/image", methods=["GET", "POST"])
 def image_page():
-    if is_banned():
-        return _banned_response()
     if "user_name" not in session:
         return redirect(url_for("welcome_or_chat"))
 
