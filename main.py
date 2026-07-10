@@ -82,6 +82,9 @@ def needs_search(question: str) -> bool:
     if len(q) < 6:
         return False
     q_lower = q.lower()
+    # سؤال درباره‌ی اسم خودِ کاربر
+    if any(hint in q_lower for hint in USER_NAME_HINTS):
+        return False
     # سلام و احوال‌پرسی کوتاه
     if any(hint in q_lower for hint in GREETING_HINTS) and len(q) < 40:
         return False
@@ -94,9 +97,18 @@ def needs_search(question: str) -> bool:
     return True
 
 
+# کلماتی که کاربر درباره‌ی اسم خودش (نه اسم ربات) می‌پرسد
+USER_NAME_HINTS = [
+    "اسم من چیه", "اسم من چیست", "اسمم چیه", "اسمم چیست",
+    "من کی هستم", "اسممو میدونی", "اسم منو میدونی", "یادته اسمم چیه",
+]
+
+
 def message_kind(question: str) -> str:
-    """برمی‌گرداند: 'identity' یا 'emotional' یا 'casual' یا 'search' """
+    """برمی‌گرداند: 'identity' یا 'user_identity' یا 'emotional' یا 'casual' یا 'search' """
     q_lower = question.strip().lower()
+    if any(hint in q_lower for hint in USER_NAME_HINTS):
+        return "user_identity"
     if any(hint in q_lower for hint in IDENTITY_HINTS):
         return "identity"
     if any(hint in q_lower for hint in EMOTIONAL_HINTS):
@@ -114,6 +126,8 @@ def get_persona_prompt(user_name: str = None) -> str:
     return f"""
 تو «میکرو» هستی، یک دستیار هوش مصنوعی فارسی‌زبان، دوستانه، آرام و باهوش.
 {name_line}
+
+**قانون قاطع (خیلی مهم):** جواب را هرگز با «سلام»، «خوبم»، «چطوری» یا هر نوع احوال‌پرسی شروع نکن — مگر اینکه پیام کاربر واقعاً و فقط یک سلام/احوال‌پرسی ساده باشد. برای هر سؤال یا درخواست واقعی (خبری، فنی، هر چیز دیگر)، مستقیم و بدون هیچ مقدمه‌ای برو سراغ جواب اصلی.
 
 قوانین گفتگوی معمولی:
 - جواب‌های سلام/احوال‌پرسی/تشکر باید کوتاه (۱ جمله)، ساده، و کاملاً درست از نظر دستور زبان فارسی باشند.
@@ -329,9 +343,17 @@ def show_in_browser(question: str, answer: str):
 
 
 def answer_question(question: str, user_name: str = None) -> str:
+    kind = message_kind(question)
+
     # سؤالات هویتی هرگز به مدل هوش مصنوعی نمی‌رن؛ جواب ثابت و تضمینی از پایتون برمی‌گرده
-    if message_kind(question) == "identity":
+    if kind == "identity":
         return IDENTITY_REPLY
+
+    # سؤال درباره‌ی اسم خودِ کاربر هم مستقیم و بدون مدل جواب داده می‌شه (دقیق‌تر و بدون قاطی‌شدن)
+    if kind == "user_identity":
+        if user_name:
+            return f"اسمت {user_name}‌ه! خودت بهم گفتی 😊"
+        return "هنوز اسمت رو بهم نگفتی! می‌تونی از اول صفحه وارد کنی."
 
     context = ""
     if needs_search(question):

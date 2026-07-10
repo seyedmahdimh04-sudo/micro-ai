@@ -14,7 +14,7 @@
 import os
 import time
 import secrets
-from datetime import date
+from datetime import date, timedelta
 from collections import defaultdict
 from flask import Flask, request, render_template_string, session, redirect, url_for
 from urllib.parse import quote
@@ -23,6 +23,8 @@ from main import answer_question
 app = Flask(__name__)
 # کلید امن برای session (روی Render حتماً به‌عنوان متغیر محیطی SECRET_KEY تنظیمش کن)
 app.secret_key = os.getenv("SECRET_KEY", secrets.token_hex(16))
+# مهم: session تا ۳۰ روز باقی می‌مونه، حتی اگه مرورگر بسته بشه (رفع باگ فراموشی اسم/محدودیت)
+app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(days=30)
 
 SITE_NAME = "هوش مصنوعی میکرو"
 
@@ -47,6 +49,7 @@ ONLINE_LIMIT = 5               # از این تعداد کاربر آنلاین 
 
 def get_user_id():
     """شناسه‌ی یکتا برای هر کاربر (بر اساس session)"""
+    session.permanent = True  # مهم: با این کار session با بستن مرورگر پاک نمی‌شه
     if "uid" not in session:
         session["uid"] = secrets.token_hex(8)
     return session["uid"]
@@ -121,6 +124,11 @@ WELCOME_TEMPLATE = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="میکرو، دستیار هوش مصنوعی فارسی‌زبان رایگان: اخبار روز، گفتگوی هوشمند و ساخت تصویر با هوش مصنوعی. ساخته شده توسط تیم فنی persian_ai.">
+    <meta name="keywords" content="میکرو, هوش مصنوعی فارسی, چت بات فارسی, اخبار هوش مصنوعی, persian_ai, ساخت تصویر هوش مصنوعی">
+    <meta property="og:title" content="{{ site_name }}">
+    <meta property="og:description" content="دستیار هوش مصنوعی فارسی‌زبان رایگان برای اخبار، گفتگو و ساخت تصویر.">
+    <meta property="og:type" content="website">
     <title>{{ site_name }}</title>
     <style>
         body {
@@ -396,12 +404,6 @@ PAGE_TEMPLATE = """
 """
 
 
-@app.before_request
-def _track():
-    if request.endpoint not in ("static",):
-        track_activity()
-
-
 def _server_busy() -> bool:
     return count_online() > ONLINE_LIMIT and not is_admin()
 
@@ -415,6 +417,7 @@ def welcome_or_chat():
 
 @app.route("/start", methods=["POST"])
 def start():
+    session.permanent = True
     name = request.form.get("user_name", "").strip()
     if name:
         # رمز مخصوص سازنده: اگه دقیقاً همین رو به‌جای اسم بزنه، پنل مدیریت باز می‌شه
@@ -453,6 +456,7 @@ def index_post():
     answer = None
     error = None
     if question:
+        track_activity()  # فقط الان که واقعاً پیام فرستاده، به‌عنوان کاربر فعال ثبت می‌شود
         try:
             answer = answer_question(question, session.get("user_name"))
         except Exception as e:
@@ -472,6 +476,7 @@ def image_page():
     if request.method == "POST" and not busy:
         prompt = request.form.get("prompt", "").strip()
         if prompt and check_daily_limit("free_image", DAILY_LIMIT_FREE_IMAGE):
+            track_activity()  # فقط الان که واقعاً از ابزار استفاده کرده، ثبت می‌شود
             encoded_prompt = quote(prompt)
             image_url = (
                 f"https://image.pollinations.ai/prompt/{encoded_prompt}"
