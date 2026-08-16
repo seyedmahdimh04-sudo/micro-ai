@@ -1,7 +1,6 @@
-requests
-python-dotenv
-openai
-anthropic
-ddgs
 flask
+google-genai
+google-generativeai
+python-dotenv
+requests
 gunicorn
