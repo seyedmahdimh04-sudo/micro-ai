@@ -12,13 +12,15 @@ from google.genai import types
 load_dotenv(encoding="utf-8-sig")
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
+client = None
+if GEMINI_API_KEY:
+    try:
+        client = genai.Client(api_key=GEMINI_API_KEY)
+    except Exception as e:
+        print(f"Gemini Init Warning: {e}")
 
 DB_NAME = "micro_database.db"
 
-# ----------------------------------------------------
-# مدیریت دیتابیس مشترک بین ربات بله و وب‌سایت
-# ----------------------------------------------------
 def init_db():
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
@@ -81,7 +83,6 @@ def deduct_user_coins(user_id: str, amount: int) -> bool:
     return False
 
 def claim_channel_bonus(user_id: str) -> bool:
-    """اعطای ۴۰ سکه رایگان برای عضویت در کانال"""
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
     c.execute("SELECT has_channel_bonus FROM users WHERE user_id = ?", (str(user_id),))
@@ -94,14 +95,9 @@ def claim_channel_bonus(user_id: str) -> bool:
     conn.close()
     return False
 
-# ----------------------------------------------------
-# تولید جملات اختصاصی هر روز هفته
-# ----------------------------------------------------
 def get_daily_micro_greeting(user_name: str = "کاربر") -> str:
     weekday = datetime.date.today().weekday()
     name = user_name if user_name else "دوست من"
-    
-    # 5=شنبه, 6=یکشنبه, 0=دوشنبه, 1=سه‌شنبه, 2=چهارشنبه, 3=پنج‌شنبه, 4=جمعه
     greetings = {
         5: f"چه چیزی خلق کنیم {name}؟",
         6: f"میکروفن دست شماست {name}!",
@@ -113,12 +109,12 @@ def get_daily_micro_greeting(user_name: str = "کاربر") -> str:
     }
     return greetings.get(weekday, f"امروز چه چیزی خلق کنیم {name}؟")
 
-# ----------------------------------------------------
-# پردازش پاسخ با جمینای
-# ----------------------------------------------------
-def answer_question(question: str, user_name: str = None, history: list = None) -> str:
+def answer_question(question: str, user_name: str = None, history: list = None):
+    """
+    خروجی: (متن_پاسخ, وضعیت_موفقیت_بولین)
+    """
     if not GEMINI_API_KEY or not client:
-        return "⚠️ کلید GEMINI_API_KEY تنظیم نشده است."
+        return "⚠️ کلید GEMINI_API_KEY تنظیم نشده یا اتصال برقرار نیست.", False
 
     try:
         contents = []
@@ -142,6 +138,9 @@ def answer_question(question: str, user_name: str = None, history: list = None) 
                 temperature=0.7,
             )
         )
-        return response.text
+        return response.text, True
     except Exception as e:
-        return f"⚠️ خطا در تولید پاسخ: {str(e)}"
+        err_msg = str(e)
+        if "403" in err_msg or "location" in err_msg.lower() or "blocked" in err_msg.lower():
+            return "⚠️ خطای دسترسی جغرافیایی به سرور جمینای. روی هاست سرور خارجی (مثل رندر) بدون مشکل اجرا می‌شود.", False
+        return f"⚠️ خطای موقت در دریافت پاسخ: {err_msg}", False

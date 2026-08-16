@@ -1,10 +1,9 @@
 """
-ربات رسمی بله «میکرو» متصل به درگاه پرداخت کیف‌پول الکترونیکی بله
-اجرا: python bot_bale.py
+ربات رسمی بله «میکرو» با حل باگ دکمه‌ها و محافظت از سکه
+اجرا: python bott.py
 """
 
 import os
-import json
 import time
 import requests
 from dotenv import load_dotenv
@@ -20,7 +19,6 @@ PROVIDER_TOKEN = os.getenv("BALE_PAYMENT_PROVIDER_TOKEN", "WALLET-TEST-111111111
 ADMIN_UID = os.getenv("ADMIN_UID", "admin_persian_ai")
 BASE_URL = f"https://tapi.bale.ai/bot{BALE_TOKEN}"
 
-# قیمت‌ها به ریال
 COIN_PACKAGES = {
     "pack_40":  {"coins": 40,  "price": 200000,  "title": "🪙 بسته ۴۰ سکه (استارتر)", "desc": "۴۰ سکه میکرو برای چت و ساخت تصویر"},
     "pack_70":  {"coins": 70,  "price": 700000,  "title": "🪙 بسته ۷۰ سکه (استارتر)", "desc": "۷۰ سکه میکرو برای استفاده مداوم"},
@@ -52,7 +50,7 @@ def send_main_menu(chat_id: int, user_name: str):
     keyboard = {
         "keyboard": [
             [{"text": "💬 ارتباط با میکرو"}, {"text": "🪙 افزایش اعتبار و خرید سکه"}],
-            [{"text": " پشتیبانی 👨‍💻"}]
+            [{"text": "👨‍💻 پشتیبانی"}]
         ],
         "resize_keyboard": True
     }
@@ -98,7 +96,6 @@ def run_bot():
             for u in updates.get("result", []):
                 offset = u["update_id"] + 1
 
-                # ۱. تایید اولیه پرداخت (PreCheckoutQuery)
                 if "pre_checkout_query" in u:
                     pq = u["pre_checkout_query"]
                     call_api("answerPreCheckoutQuery", {
@@ -107,7 +104,6 @@ def run_bot():
                     })
                     continue
 
-                # ۲. کلیک روی دکمه‌های شیشه‌ای خرید
                 if "callback_query" in u:
                     cq = u["callback_query"]
                     data = cq.get("data")
@@ -124,7 +120,6 @@ def run_bot():
                 user_name = msg["from"].get("first_name", "کاربر")
                 get_or_create_user(user_id, user_name)
 
-                # ۳. بررسی پرداخت موفق (SuccessfulPayment)
                 if "successful_payment" in msg:
                     sp = msg["successful_payment"]
                     inv_payload = sp.get("invoice_payload", "")
@@ -151,10 +146,10 @@ def run_bot():
                     send_invoice_packages(chat_id)
                     continue
 
-                if text == " پشتیبانی 👨‍💻":
+                if text == "👨‍💻 پشتیبانی":
                     call_api("sendMessage", {
                         "chat_id": chat_id,
-                        "text": f"💬 شناسه کاربری شما (UID): `{user_id}`\nبرای ارتباط با پشتیبانی به آی‌دی @admin_persian_ai پیام دهید."
+                        "text": f"💬 شناسه کاربری شما (UID): `{user_id}`\nجهت ارتباط با پشتیبانی به آی‌دی زیر پیام دهید:\n@admin_persian_ai"
                     })
                     continue
 
@@ -166,19 +161,26 @@ def run_bot():
                     })
                     continue
 
-                # پردازش گفتگوی متنی با جمینای
                 if user_states.get(chat_id) == "chatting" or not text.startswith("/"):
-                    if deduct_user_coins(user_id, 5):
+                    current_coins = get_user_coins(user_id)
+                    if current_coins >= 5:
                         hist = user_histories.get(chat_id, [])
-                        ans = answer_question(text, user_name, hist)
-                        hist.append({"q": text, "a": ans})
-                        user_histories[chat_id] = hist[-10:]
+                        ans, success = answer_question(text, user_name, hist)
                         
-                        rem = get_user_coins(user_id)
-                        call_api("sendMessage", {
-                            "chat_id": chat_id,
-                            "text": f"{ans}\n\n─────────────\n🪙 ۵ سکه کسر شد (باقی‌مانده: {rem})"
-                        })
+                        if success:
+                            deduct_user_coins(user_id, 5)
+                            hist.append({"q": text, "a": ans})
+                            user_histories[chat_id] = hist[-10:]
+                            rem = get_user_coins(user_id)
+                            call_api("sendMessage", {
+                                "chat_id": chat_id,
+                                "text": f"{ans}\n\n─────────────\n🪙 ۵ سکه کسر شد (باقی‌مانده: {rem})"
+                            })
+                        else:
+                            call_api("sendMessage", {
+                                "chat_id": chat_id,
+                                "text": f"{ans}\n(هیچ سکه‌ای از حساب شما کسر نشد)"
+                            })
                     else:
                         call_api("sendMessage", {
                             "chat_id": chat_id,

@@ -1,12 +1,11 @@
 """
-وب‌سایت و مینی‌اپ هوش مصنوعی «میکرو»
+وب‌سایت هوش مصنوعی «میکرو»
 اجرا: python app.py
 """
 
 import os
 import secrets
 from datetime import timedelta
-from urllib.parse import quote
 from flask import Flask, request, render_template_string, session, redirect, url_for
 from main import (
     answer_question, get_daily_micro_greeting, get_or_create_user,
@@ -18,7 +17,6 @@ app.secret_key = os.getenv("SECRET_KEY", secrets.token_hex(16))
 app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(days=30)
 
 SITE_NAME = "هوش مصنوعی میکرو"
-ADMIN_SECRET = os.getenv("ADMIN_SECRET", "seyedmahdi_amirmz")
 
 PAGE_TEMPLATE = """
 <!DOCTYPE html>
@@ -51,13 +49,13 @@ PAGE_TEMPLATE = """
             padding: 12px 20px; border-bottom: 1px solid var(--border);
             background: rgba(0,0,0,0.2); backdrop-filter: blur(10px);
         }
-        .mode-tags { display: flex; gap: 8px; flex-wrap: wrap; }
-        .tag-pill {
-            background: var(--btn-bg); border: 1px solid var(--border);
-            padding: 6px 14px; border-radius: 999px; font-size: 12px;
-            color: var(--text); display: flex; align-items: center; gap: 6px; cursor: pointer;
+        .join-channel-btn {
+            background: linear-gradient(135deg, #0ea5e9, #2563eb);
+            color: #fff; text-decoration: none; padding: 7px 16px; border-radius: 999px;
+            font-size: 13px; font-weight: 700; display: flex; align-items: center; gap: 6px;
+            box-shadow: 0 4px 12px rgba(14,165,233,0.3); transition: 0.2s;
         }
-        .tag-pill.active { border-color: var(--accent); color: var(--accent); }
+        .join-channel-btn:hover { opacity: 0.9; transform: scale(1.03); }
         .user-balance {
             background: rgba(34,197,94,0.15); border: 1px solid var(--accent);
             color: var(--accent); padding: 6px 14px; border-radius: 999px; font-size: 13px; font-weight: 700;
@@ -74,11 +72,6 @@ PAGE_TEMPLATE = """
         .hero-rocket { font-size: 44px; margin-bottom: 10px; animation: float 3s ease-in-out infinite; }
         @keyframes float { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-8px); } }
         .hero-title { font-size: 26px; font-weight: 800; color: var(--accent); margin-bottom: 6px; }
-        
-        .bonus-box {
-            background: rgba(234, 179, 8, 0.1); border: 1px dashed #eab308;
-            color: #facc15; padding: 10px 15px; border-radius: 12px; font-size: 13px; text-align: center; margin-bottom: 15px;
-        }
 
         .cards-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 20px; }
         .feature-card {
@@ -125,11 +118,10 @@ PAGE_TEMPLATE = """
 <body class="theme-dark" id="pageBody">
 
     <div class="header-bar">
-        <div class="mode-tags">
-            <div class="tag-pill active">⚡ حالت استدلال عمیق</div>
-            <div class="tag-pill">✨ خلاصه‌ساز کپسولی</div>
-            <div class="tag-pill">🔤 مترجم سلیس</div>
-            <div class="tag-pill">🪄 ویراستار ادبی</div>
+        <div>
+            <a href="/join_channel" target="_blank" class="join-channel-btn">
+                📢 عضویت در کانال میکرو {% if bonus_available %}(+۴۰ سکه هدیه){% endif %}
+            </a>
         </div>
 
         <div style="display:flex; align-items:center; gap:10px;">
@@ -144,12 +136,6 @@ PAGE_TEMPLATE = """
     </div>
 
     <div class="main-container">
-        {% if bonus_available %}
-        <div class="bonus-box">
-            🎁 عضویت در کانال میکرو = ۴۰ سکه رایگان! <a href="/claim_bonus" style="color:#fff; font-weight:700; text-decoration:underline; margin-right:8px;">دریافت هدیه</a>
-        </div>
-        {% endif %}
-
         <div class="hero-banner">
             <div class="hero-rocket">🚀</div>
             <h1 class="hero-title">{{ greeting }}</h1>
@@ -232,15 +218,20 @@ def index():
     if request.method == "POST":
         question = request.form.get("question", "").strip()
         if question:
-            # کسر ۵ سکه به ازای هر چت
-            if deduct_user_coins(user_id, 5):
+            current_coins = get_user_coins(user_id)
+            if current_coins >= 5:
                 history = session.get("history", [])
-                answer = answer_question(question, "کاربر عزیز", history)
+                answer, success = answer_question(question, "کاربر عزیز", history)
+                
+                # تنها در صورتی سکه کسر می‌شود که پاسخ هوش مصنوعی موفق بوده باشد
+                if success:
+                    deduct_user_coins(user_id, 5)
+                
                 history.append({"q": question, "a": answer})
                 session["history"] = history[-10:]
             else:
                 history = session.get("history", [])
-                history.append({"q": question, "a": "⚠️ سکه شما تمام شده است! برای شارژ سکه به ربات بله مراجعه کنید: https://ble.ir/micro_ai_bot"})
+                history.append({"q": question, "a": "⚠️ سکه شما برای گفتگو کافی نیست! برای افزایش موجودی به ربات بله مراجعه کنید: https://ble.ir/micro_ai_bot"})
                 session["history"] = history
             return redirect(url_for("index", uid=user_id))
 
@@ -253,12 +244,12 @@ def index():
         history=session.get("history", [])
     )
 
-@app.route("/claim_bonus")
-def claim_bonus():
+@app.route("/join_channel")
+def join_channel():
     uid = session.get("uid")
     if uid:
         claim_channel_bonus(uid)
-    return redirect(url_for("index", uid=uid))
+    return redirect("https://ble.ir/persian_ai")
 
 if __name__ == "__main__":
     app.run(debug=False, host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
