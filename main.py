@@ -1,471 +1,147 @@
 """
-چت‌بات هوش مصنوعی متصل به گوگل
---------------------------------
-این اسکریپت:
-1. سؤال کاربر را می‌گیرد
-2. با استفاده از Google Custom Search API در گوگل جستجو می‌کند
-3. نتایج جستجو (تیتر + خلاصه + لینک) را به یک مدل زبانی (LLM) می‌دهد
-4. مدل بر اساس نتایج، یک پاسخ نهایی همراه با منابع تولید می‌کند
-
-قبل از اجرا حتماً فایل .env.example را بخوانید و کلیدهای API را تنظیم کنید.
+اسکلت اصلی هوش مصنوعی میکرو و مدیریت دیتابیس کاربران و سکه‌ها
 """
 
 import os
-import sys
-import re
-import random
-import webbrowser
-import tempfile
+import sqlite3
 import datetime
-import requests
 from dotenv import load_dotenv
-from ddgs import DDGS
+from google import genai
+from google.genai import types
 
-# بارگذاری متغیرهای محیطی از فایل .env (با پشتیبانی از BOM که Notepad ویندوز اضافه می‌کند)
 load_dotenv(encoding="utf-8-sig")
 
-GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
-GOOGLE_CSE_ID = os.getenv("GOOGLE_CSE_ID")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 
-# یکی از این سه را طبق انتخابتان استفاده کنید
-LLM_PROVIDER = os.getenv("LLM_PROVIDER", "ollama")  # "openai" یا "anthropic" یا "ollama"
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.2")  # نام مدلی که با Ollama نصب کردید
-OLLAMA_URL = "http://localhost:11434/api/chat"
+DB_NAME = "micro_database.db"
 
-# رسانه‌های فارسی‌زبان خارج از کشور که از نتایج جستجو حذف می‌شوند
-BLOCKED_DOMAINS = [
-    "bbc.com", "bbc.co.uk",
-    "dw.com",
-    "iranintl.com", "iranintl.tv",
-    "voanews.com", "ir.voanews.com",
-    "radiofarda.com",
-    "euronews.com",
-    "france24.com",
-    "manototv.com",
-    "rferl.org",
-]
-
-
-def is_blocked(link: str) -> bool:
-    """بررسی می‌کند که آیا لینک متعلق به یکی از دامنه‌های مسدودشده است"""
-    link_lower = link.lower()
-    return any(domain in link_lower for domain in BLOCKED_DOMAINS)
-
-
-# کلماتی که نشان‌دهنده‌ی سلام و احوال‌پرسی ساده هستند
-GREETING_HINTS = [
-    "سلام", "چطوری", "خوبی", "چه خبر", "حالت چطوره", "خداحافظ",
-    "ممنون", "مرسی", "متشکرم", "خوشحالم", "شوخی", "جوک",
-]
-
-# کلماتی که نشان‌دهنده‌ی سؤال درباره‌ی هویت/سازنده‌ی خودِ ربات هستند (باید مشخصاً به خودِ ربات اشاره کنند)
-IDENTITY_HINTS = [
-    "اسمت چیه", "اسمت چیست", "کی هستی", "تو کی هستی", "کی هستی تو", "خودت رو معرفی کن",
-    "سازنده‌ات", "سازندت", "سازنده ات", "کی ساختت", "کی تو رو ساخت",
-    "چه کسی ساختت", "چه کسی تو رو ساخت", "توسط چه کسی ساخته شدی",
-    "توسط کی ساخته شدی", "کی طراحیت کرد", "تو چی هستی",
-]
-
-# کلماتی که نشان‌دهنده‌ی درددل یا حال بد کاربر هستند (نباید جستجوی خبری بشه، باید همدلی بشه)
-EMOTIONAL_HINTS = [
-    "مسخره", "ناراحتم", "ناراحت شدم", "غمگین", "گریه", "افسرده",
-    "تنهام", "تنها شدم", "دلم شکسته", "اذیتم می", "اذیتم کرد",
-    "کسی دوستم نداره", "بی‌کسم", "استرس دارم", "نگرانم", "می‌ترسم",
-    "خسته‌ام", "خسته شدم", "دلم گرفته", "افتضاحه", "بدبختم",
-]
-
-
-def needs_search(question: str) -> bool:
-    """تشخیص اینکه آیا سؤال نیاز به جستجوی خبری دارد یا صرفاً گفتگو/احساسات است"""
-    q = question.strip()
-    if len(q) < 6:
-        return False
-    q_lower = q.lower()
-    # سؤال درباره‌ی اسم خودِ کاربر
-    if any(hint in q_lower for hint in USER_NAME_HINTS):
-        return False
-    # سلام و احوال‌پرسی کوتاه
-    if any(hint in q_lower for hint in GREETING_HINTS) and len(q) < 40:
-        return False
-    # سؤال هویتی
-    if any(hint in q_lower for hint in IDENTITY_HINTS) and len(q) < 60:
-        return False
-    # درددل و حرف احساسی — طول بیشتری هم مجازه چون معمولاً جمله‌ی کاملیه
-    if any(hint in q_lower for hint in EMOTIONAL_HINTS):
-        return False
-    return True
-
-
-# کلماتی که کاربر درباره‌ی اسم خودش (نه اسم ربات) می‌پرسد
-USER_NAME_HINTS = [
-    "اسم من چیه", "اسم من چیست", "اسمم چیه", "اسمم چیست",
-    "من کی هستم", "اسممو میدونی", "اسم منو میدونی", "یادته اسمم چیه",
-]
-
-
-def message_kind(question: str) -> str:
-    """برمی‌گرداند: 'identity' یا 'user_identity' یا 'emotional' یا 'casual' یا 'search' """
-    q_lower = question.strip().lower()
-    if any(hint in q_lower for hint in USER_NAME_HINTS):
-        return "user_identity"
-    if any(hint in q_lower for hint in IDENTITY_HINTS):
-        return "identity"
-    if any(hint in q_lower for hint in EMOTIONAL_HINTS):
-        return "emotional"
-    if any(hint in q_lower for hint in GREETING_HINTS):
-        return "casual"
-    return "search"
-
-
-def get_persona_prompt(user_name: str = None) -> str:
-    today = datetime.date.today()
-    weekday_names = ["دوشنبه", "سه‌شنبه", "چهارشنبه", "پنج‌شنبه", "جمعه", "شنبه", "یکشنبه"]
-    weekday = weekday_names[today.weekday()]
-    name_line = f'اسم کاربری که داری باهاش صحبت می‌کنی «{user_name}» است. هر جا طبیعی بود، با اسمش صداش کن (نه تو هر جمله، فقط طبیعی و گاه‌به‌گاه).' if user_name else ""
-    return f"""
-تو «میکرو» هستی، یک دستیار هوش مصنوعی فارسی‌زبان، دوستانه، آرام و باهوش.
-{name_line}
-
-**قانون قاطع (خیلی مهم):** جواب را هرگز با «سلام»، «خوبم»، «چطوری» یا هر نوع احوال‌پرسی شروع نکن — مگر اینکه پیام کاربر واقعاً و فقط یک سلام/احوال‌پرسی ساده باشد. برای هر سؤال یا درخواست واقعی (خبری، فنی، هر چیز دیگر)، مستقیم و بدون هیچ مقدمه‌ای برو سراغ جواب اصلی.
-
-قوانین گفتگوی معمولی:
-- جواب‌های سلام/احوال‌پرسی/تشکر باید کوتاه (۱ جمله)، ساده، و کاملاً درست از نظر دستور زبان فارسی باشند.
-- خیلی مهم — صرف فعل درست: وقتی کسی می‌پرسه «خوبی؟»، جواب درست با فعل اول‌شخص است: «خوبم، ممنون!». هرگز کلمه‌ی «خوبی» را عیناً برای خودت تکرار نکن.
-  مثال درست: کاربر می‌گه «سلام خوبی؟» ← تو می‌گی «سلام! خوبم مرسی، تو چطوری؟»
-  مثال غلط (هرگز این‌طور جواب نده): «خوبی ممنونم» یا «خوبی، خوبم»
-- هرگز جمله‌های نامفهوم یا بی‌معنی نساز.
-
-قوانین همدلی (خیلی مهم):
-- اگر کاربر داشت درددل می‌کرد یا حال بدی داشت (مثلاً می‌گفت اذیتش می‌کنن، ناراحته، تنهاست، استرس داره)، هرگز بی‌تفاوت یا سرد جواب نده (مثل «به من چه» یا رد کردن حرفش). با گرمی و همدلی واقعی گوش بده، احساسش را به رسمیت بشناس، و در صورت لزوم به آرامی پیشنهاد بده با یک آدم بزرگ‌تر قابل‌اعتماد (والدین، معلم، مشاور) هم صحبت کنه.
-
-قوانین زبان (سخت‌گیرانه رعایت کن):
-- کل پاسخ باید ۱۰۰٪ به زبان فارسی و با الفبای فارسی نوشته شود.
-- هیچ کلمه، حرف، یا عبارت انگلیسی/چینی/عربی/لاتین وسط جمله نیاور — حتی یک کلمه. اسم‌های خارجی را با حروف فارسی بنویس (مثلاً «گوگل» نه Google).
-- عدد می‌تواند فارسی یا انگلیسی باشد، مشکلی ندارد، اما هیچ کلمه‌ی نوشتاری غیرفارسی مجاز نیست.
-
-قوانین خبری:
-- اگر سؤال نیاز به اطلاعات به‌روز یا خبری دارد، از نتایج جستجوی داده‌شده استفاده کن.
-- امروز {weekday}، {today.strftime('%Y/%m/%d')} میلادی است. بر این اساس قضاوت کن چه خبری «جدید» یا «قدیمی» است. اگر تاریخ منبع خیلی قدیمی بود، به کاربر بگو این آخرین خبر موجود بوده و ممکن است به‌روزتر هم وجود داشته باشد.
-- بی‌طرف، مؤدب و صادق باش. اگر خبر مرتبطی در نتایج نبود، صادقانه بگو خبری پیدا نشد.
-- در پایان پاسخ‌های خبری، شماره منابع استفاده‌شده را داخل قلاب مثل [1] ذکر کن.
-"""
-
-
-# جواب ثابت و از پیش تعیین‌شده برای سؤالات هویتی — مستقیم از پایتون برمی‌گردد،
-# اصلاً به مدل هوش مصنوعی داده نمی‌شود تا هیچ‌وقت نشتی به بقیه‌ی جواب‌ها نداشته باشد
-IDENTITY_REPLY = (
-    "من میکرو هستم! توسط تیم فنی persian_ai ساخته شدم. "
-    "جزئیات بیشتر درباره‌ی سازنده‌ام محرمانه‌ست و خودم هم بهش دسترسی ندارم 😊"
-)
-
-
-# جوک‌ها و فکت‌های جالب فارسی برای دکمه‌ی «حوصلم سر رفته»
-FUN_ITEMS = [
-    "می‌دونستی قلب میگو تو سرشه، نه تو سینه‌ش؟ 🦐",
-    "یه بار یه بچه به معلمش گفت: خانم، بابام میگه همه‌ی سؤالای امتحان تکراریه! معلم گفت: خب جوابا رو عوض کردیم دیگه 😄",
-    "عسل تنها غذاییه که هیچ‌وقت فاسد نمی‌شه؛ تو مقبره‌های فرعون‌ها عسل چندهزارساله پیدا کردن که هنوز خوردنی بوده!",
-    "چرا کامپیوتر سردش شد؟ چون پنجره‌هاش رو باز گذاشته بود! 🪟",
-    "اختاپوس‌ها سه تا قلب دارن و خونشون آبیه.",
-    "یارو میره دکتر میگه دکتر هر وقت میخندم درد میگیره، دکتر میگه پس نخند!",
-    "یک روز رو زمین معادل ۲۴ ساعت نیست، دقیقاً ۲۳ ساعت و ۵۶ دقیقه‌ست؛ فرقش تو چهار سال یه‌بار جمع میشه.",
-    "چرا ماهی‌ها تو مدرسه درس نمی‌خونن؟ چون همیشه تو دریان! 🐟",
-    "موزها از نظر گیاه‌شناسی توت محسوب میشن، ولی توت‌فرنگی نه!",
-    "به دیوار گفتن چرا صاف نمیشینی؟ گفت من از اول کج بودم!",
-    "زرافه‌ها فقط ۲ ساعت تو شبانه‌روز می‌خوابن.",
-    "یارو زنگ می‌زنه آتش‌نشانی میگه خونه‌مون داره میسوزه زود بیاین! میگن چطوری بیایم؟ میگه با همون ماشین قرمزه دیگه!",
-    "مغز انسان تقریباً ۷۵٪ آبه.",
-    "چرا دوچرخه نمی‌تونست خودش وایسه؟ چون خیلی خسته بود! 🚲",
-    "عمر یه پروانه‌ی بالغ گاهی فقط چند روزه.",
-]
-
-
-def get_random_fun() -> str:
-    """یک جوک یا فکت جالب فارسی تصادفی برمی‌گرداند"""
-    return random.choice(FUN_ITEMS)
-
-
-def get_daily_headlines(limit: int = 4):
-    """چند تیتر خبر مهم امروز را برمی‌گرداند (بدون تحلیل مدل، فقط تیترهای خام)"""
-    try:
-        results = google_search("مهم‌ترین اخبار امروز ایران و جهان", num_results=limit)
-        return results[:limit]
-    except Exception:
-        return []
-    """جستجوی خبری با استفاده از DuckDuckGo News (رایگان، بدون کلید، بدون نیاز به Billing)"""
-    results = []
-    with DDGS() as ddgs:
-        try:
-            # اول تلاش برای جستجوی مخصوص اخبار
-            for item in ddgs.news(query, max_results=num_results * 2, region="ir-fa"):
-                link = item.get("url", "")
-                if is_blocked(link):
-                    continue
-                results.append({
-                    "title": item.get("title", ""),
-                    "snippet": item.get("body", ""),
-                    "link": link,
-                    "date": item.get("date", ""),
-                })
-                if len(results) >= num_results:
-                    break
-        except Exception:
-            pass
-
-        # اگر نتیجه‌ی خبری کافی نبود، جستجوی عمومی وب را هم اضافه کن
-        if len(results) < 3:
-            for item in ddgs.text(query, max_results=num_results * 2, region="ir-fa"):
-                link = item.get("href", "")
-                if is_blocked(link):
-                    continue
-                results.append({
-                    "title": item.get("title", ""),
-                    "snippet": item.get("body", ""),
-                    "link": link,
-                    "date": "",
-                })
-                if len(results) >= num_results:
-                    break
-    return results
-
-
-def build_context(results):
-    """تبدیل نتایج جستجو به یک متن قابل استفاده برای پرامپت"""
-    context = ""
-    for i, r in enumerate(results, start=1):
-        context += f"[{i}] عنوان: {r['title']}\n"
-        if r.get("date"):
-            context += f"    تاریخ: {r['date']}\n"
-        context += f"    خلاصه: {r['snippet']}\n"
-        context += f"    لینک: {r['link']}\n\n"
-    return context
-
-
-def has_latin_words(text: str) -> bool:
-    """بررسی می‌کند که آیا متن شامل کلمات انگلیسی/لاتین ناخواسته است"""
-    return bool(re.search(r"[a-zA-Z]{2,}", text))
-
-
-def ask_openai(question: str, context: str, user_name: str = None, history: list = None) -> str:
-    from openai import OpenAI
-
-    # اینجا کد هوشمند شده: کلید گروک (gsk_...) رو برمی‌داره و به سرور رایگان گروک وصل میشه
-    client = OpenAI(
-        api_key=OPENAI_API_KEY,
-        base_url="https://api.groq.com/openai/v1"
-    )
-
-    system_prompt = get_persona_prompt(user_name)
-    kind = message_kind(question)
-
-    if context:
-        user_prompt = f"سؤال کاربر: {question}\n\nنتایج جستجو:\n{context}\n\nبر اساس نتایج بالا (در صورت نیاز) پاسخ بده:"
-    elif kind == "emotional":
-        user_prompt = f"پیام کاربر: {question}\n\n(کاربر داره درددل می‌کنه یا حال بدی داره. با همدلی و گرمی جواب بده، طبق قوانین همدلی.)"
-    else:
-        user_prompt = f"سؤال کاربر: {question}\n\n(این یک گفتگوی معمولی است، نیازی به جستجو نیست، طبیعی جواب بده.)"
-
-    def _call(extra_reminder: str = "") -> str:
-        messages = [{"role": "system", "content": system_prompt + extra_reminder}]
-        if kind == "casual":
-            # این مثال فقط برای یادگیری لحن سلام‌کردن است، نه الگوی همه‌ی پاسخ‌ها
-            messages.append({"role": "user", "content": "سلام میکرو چطوری؟"})
-            messages.append({"role": "assistant", "content": "سلام! خوبم، ممنون. تو چطوری؟"})
-        # چند پیام آخر مکالمه برای حفظ تداوم گفتگو (اگه موجود باشه)
-        if history:
-            for turn in history[-3:]:
-                messages.append({"role": "user", "content": turn.get("q", "")})
-                messages.append({"role": "assistant", "content": turn.get("a", "")})
-        messages.append({"role": "user", "content": user_prompt})
-
-        response = client.chat.completions.create(
-            model="llama-3.1-8b-instant",
-            temperature=0.4,
-            max_tokens=700,
-            messages=messages,
+# ----------------------------------------------------
+# مدیریت دیتابیس مشترک بین ربات بله و وب‌سایت
+# ----------------------------------------------------
+def init_db():
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS users (
+            user_id TEXT PRIMARY KEY,
+            username TEXT,
+            coins INTEGER DEFAULT 20,
+            has_channel_bonus INTEGER DEFAULT 0,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
-        return response.choices[0].message.content
+    ''')
+    conn.commit()
+    conn.close()
 
-    answer = _call()
-    # اگر کلمه‌ی انگلیسی ناخواسته (بیشتر از حد مجاز برای لینک/منبع) در پاسخ بود، یک بار دیگر با یادآوری سخت‌گیرانه امتحان کن
-    if has_latin_words(answer) and not context:
-        answer = _call("\n\nیادآوری فوری: پاسخ قبلی‌ات کلمه‌ی غیرفارسی داشت. این‌بار کاملاً و فقط با الفبای فارسی بنویس.")
-    return answer
+init_db()
 
-
-def ask_anthropic(question: str, context: str, user_name: str = None, history: list = None) -> str:
-    import anthropic
-    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-
-    system_prompt = get_persona_prompt(user_name)
-    kind = message_kind(question)
-
-    if context:
-        user_prompt = f"سؤال کاربر: {question}\n\nنتایج جستجو:\n{context}\n\nبر اساس نتایج بالا (در صورت نیاز) پاسخ بده:"
-    elif kind == "emotional":
-        user_prompt = f"پیام کاربر: {question}\n\n(کاربر داره درددل می‌کنه یا حال بدی داره. با همدلی و گرمی جواب بده.)"
+def get_or_create_user(user_id: str, username: str = "کاربر"):
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    c.execute("SELECT user_id, coins, has_channel_bonus FROM users WHERE user_id = ?", (str(user_id),))
+    row = c.fetchone()
+    if not row:
+        c.execute("INSERT INTO users (user_id, username, coins) VALUES (?, ?, 20)", (str(user_id), username))
+        conn.commit()
+        coins = 20
+        bonus = 0
     else:
-        user_prompt = f"سؤال کاربر: {question}\n\n(این یک گفتگوی معمولی است، نیازی به جستجو نیست، طبیعی جواب بده.)"
+        coins = row[1]
+        bonus = row[2]
+    conn.close()
+    return {"user_id": str(user_id), "coins": coins, "has_channel_bonus": bool(bonus)}
 
-    messages = []
-    if history:
-        for turn in history[-3:]:
-            messages.append({"role": "user", "content": turn.get("q", "")})
-            messages.append({"role": "assistant", "content": turn.get("a", "")})
-    messages.append({"role": "user", "content": user_prompt})
+def get_user_coins(user_id: str) -> int:
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    c.execute("SELECT coins FROM users WHERE user_id = ?", (str(user_id),))
+    row = c.fetchone()
+    conn.close()
+    return row[0] if row else 20
 
-    message = client.messages.create(
-        model="claude-sonnet-4-6",
-        max_tokens=1000,
-        system=system_prompt,
-        messages=messages,
-    )
-    return message.content[0].text
+def add_user_coins(user_id: str, amount: int):
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    c.execute("UPDATE users SET coins = coins + ? WHERE user_id = ?", (amount, str(user_id)))
+    conn.commit()
+    conn.close()
 
+def deduct_user_coins(user_id: str, amount: int) -> bool:
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    c.execute("SELECT coins FROM users WHERE user_id = ?", (str(user_id),))
+    row = c.fetchone()
+    if row and row[0] >= amount:
+        c.execute("UPDATE users SET coins = coins - ? WHERE user_id = ?", (amount, str(user_id)))
+        conn.commit()
+        conn.close()
+        return True
+    conn.close()
+    return False
 
-def ask_ollama(question: str, context: str, user_name: str = None, history: list = None) -> str:
-    """استفاده از مدل رایگان و محلی از طریق Ollama (بدون نیاز به کلید API یا پرداخت)"""
-    system_prompt = get_persona_prompt(user_name)
-    kind = message_kind(question)
+def claim_channel_bonus(user_id: str) -> bool:
+    """اعطای ۴۰ سکه رایگان برای عضویت در کانال"""
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    c.execute("SELECT has_channel_bonus FROM users WHERE user_id = ?", (str(user_id),))
+    row = c.fetchone()
+    if row and row[0] == 0:
+        c.execute("UPDATE users SET coins = coins + 40, has_channel_bonus = 1 WHERE user_id = ?", (str(user_id),))
+        conn.commit()
+        conn.close()
+        return True
+    conn.close()
+    return False
 
-    if context:
-        user_prompt = f"سؤال کاربر: {question}\n\nنتایج جستجو:\n{context}\n\nبر اساس نتایج بالا (در صورت نیاز) پاسخ بده:"
-    elif kind == "emotional":
-        user_prompt = f"پیام کاربر: {question}\n\n(کاربر داره درددل می‌کنه یا حال بدی داره. با همدلی و گرمی جواب بده.)"
-    else:
-        user_prompt = f"سؤال کاربر: {question}\n\n(این یک گفتگوی معمولی است، نیازی به جستجو نیست، طبیعی جواب بده.)"
-
-    messages = [{"role": "system", "content": system_prompt}]
-    if history:
-        for turn in history[-3:]:
-            messages.append({"role": "user", "content": turn.get("q", "")})
-            messages.append({"role": "assistant", "content": turn.get("a", "")})
-    messages.append({"role": "user", "content": user_prompt})
-
-    payload = {
-        "model": OLLAMA_MODEL,
-        "messages": messages,
-        "stream": False,
+# ----------------------------------------------------
+# تولید جملات اختصاصی هر روز هفته
+# ----------------------------------------------------
+def get_daily_micro_greeting(user_name: str = "کاربر") -> str:
+    weekday = datetime.date.today().weekday()
+    name = user_name if user_name else "دوست من"
+    
+    # 5=شنبه, 6=یکشنبه, 0=دوشنبه, 1=سه‌شنبه, 2=چهارشنبه, 3=پنج‌شنبه, 4=جمعه
+    greetings = {
+        5: f"چه چیزی خلق کنیم {name}؟",
+        6: f"میکروفن دست شماست {name}!",
+        0: "میکرو مشتاقانه منتظر چت با شماست!",
+        1: f"چه فکری در ذهن دارید {name}؟",
+        2: f"بیاید با هم فکر کنیم {name}!",
+        3: "تکنولوژی در دستان شماست!",
+        4: "تکنولوژی در دستان شماست!"
     }
+    return greetings.get(weekday, f"امروز چه چیزی خلق کنیم {name}؟")
 
-    response = requests.post(OLLAMA_URL, json=payload, timeout=120)
-    response.raise_for_status()
-    return response.json()["message"]["content"]
-
-
-def show_in_browser(question: str, answer: str):
-    """نمایش جواب در یک صفحه HTML ساده در مرورگر (چون ترمینال ویندوز فارسی را درست نشان نمی‌دهد)"""
-    html = f"""
-    <html dir="rtl" lang="fa">
-    <head>
-        <meta charset="UTF-8">
-        <title>پاسخ چت‌بات خبری</title>
-        <style>
-            body {{
-                font-family: Tahoma, 'Segoe UI', sans-serif;
-                background: #1e1e2f;
-                color: #eee;
-                padding: 40px;
-                max-width: 800px;
-                margin: auto;
-                line-height: 1.9;
-            }}
-            h2 {{ color: #7dd3fc; }}
-            .question {{ color: #fbbf24; margin-bottom: 20px; }}
-            .answer {{ white-space: pre-wrap; background: #2a2a3d; padding: 20px; border-radius: 10px; }}
-        </style>
-    </head>
-    <body>
-        <h2>❓ سؤال:</h2>
-        <p class="question">{question}</p>
-        <h2>✅ پاسخ:</h2>
-        <div class="answer">{answer}</div>
-    </body>
-    </html>
-    """
-    with tempfile.NamedTemporaryFile("w", suffix=".html", delete=False, encoding="utf-8") as f:
-        f.write(html)
-        path = f.name
-    webbrowser.open(f"file://{path}")
-
-
+# ----------------------------------------------------
+# پردازش پاسخ با جمینای
+# ----------------------------------------------------
 def answer_question(question: str, user_name: str = None, history: list = None) -> str:
-    kind = message_kind(question)
+    if not GEMINI_API_KEY or not client:
+        return "⚠️ کلید GEMINI_API_KEY تنظیم نشده است."
 
-    # سؤالات هویتی هرگز به مدل هوش مصنوعی نمی‌رن؛ جواب ثابت و تضمینی از پایتون برمی‌گرده
-    if kind == "identity":
-        return IDENTITY_REPLY
+    try:
+        contents = []
+        if history:
+            for turn in history[-8:]:
+                contents.append(types.Content(role="user", parts=[types.Part.from_text(text=turn.get("q", ""))]))
+                contents.append(types.Content(role="model", parts=[types.Part.from_text(text=turn.get("a", ""))]))
+        
+        contents.append(types.Content(role="user", parts=[types.Part.from_text(text=question)]))
 
-    # سؤال درباره‌ی اسم خودِ کاربر هم مستقیم و بدون مدل جواب داده می‌شه (دقیق‌تر و بدون قاطی‌شدن)
-    if kind == "user_identity":
-        if user_name:
-            return f"اسمت {user_name}‌ه! خودت بهم گفتی 😊"
-        return "هنوز اسمت رو بهم نگفتی! می‌تونی از اول صفحه وارد کنی."
-
-    context = ""
-    if needs_search(question):
-        print("\n📰 در حال جستجوی اخبار...")
-        results = google_search(question)
-        if results:
-            context = build_context(results)
-    else:
-        print("\n💬 گفتگوی معمولی/احساسی تشخیص داده شد...")
-
-    print("🤖 در حال تولید پاسخ با هوش مصنوعی...")
-    if LLM_PROVIDER == "anthropic":
-        return ask_anthropic(question, context, user_name, history)
-    elif LLM_PROVIDER == "openai":
-        return ask_openai(question, context, user_name, history)
-    else:
-        return ask_ollama(question, context, user_name, history)
-
-
-def main():
-    print("=" * 50)
-    print("چت‌بات هوش مصنوعی متصل به گوگل")
-    print("برای خروج بنویسید: exit")
-    print("=" * 50)
-
-    # مدیریت خطای هوشمند: اگر متغیر خالی بود برنامه کرش نکند و ارور قشنگ بدهد
-    missing = []
-    if LLM_PROVIDER == "openai" and not OPENAI_API_KEY:
-        missing.append("OPENAI_API_KEY")
-    if LLM_PROVIDER == "anthropic" and not ANTHROPIC_API_KEY:
-        missing.append("ANTHROPIC_API_KEY")
-
-    if missing:
-        print("\n❌ خطا: این مقادیر در فایل .env تنظیم نشده‌اند:")
-        for m in missing:
-            print(f"   - {m}")
-        print("لطفاً فایل .env را چک کرده و کلید جدید خود را وارد کنید.\n")
-        sys.exit(1)
-
-    # دریافت نام کاربر در ابتدای برنامه
-    user_name = input("\n👋 اسم شما چیه؟ ").strip()
-    if not user_name:
-        user_name = "دوست عزیز"
-
-    print(f"\nخوش اومدی {user_name}! 🎉")
-    chat_history = []
-
-    while True:
-        question = input(f"\n❓ من آماده‌ام {user_name}: ").strip()
-        if question.lower() in ("exit", "quit", "خروج"):
-            print(f"\nخداحافظ {user_name} 👋 (ساخته شده توسط تیم فنی persian_ai)")
-            break
-        if not question:
-            continue
-
-        try:
-            answer = answer_question(question, user_name, chat_history)
-            chat_history.append({"q": question, "a": answer})
-            chat_history = chat_history[-5:]
-            print("\n✅ پاسخ آماده شد! در حال باز کردن در مرورگر...\n")
-            show_in_browser(question, answer)
-        except Exception as e:
-            print(f"\n⚠️ خطا رخ داد: {e}")
-
-
-if __name__ == "__main__":
-    main()
+        system_instruction = f"""
+تو «میکرو» هستی؛ یک دستیار هوش مصنوعی فارسی، پیشرفته و دقیق متعلق به persian_ai.
+نام کاربر: {user_name or 'دوست من'}.
+پاسخ‌ها را کامل، ساختاریافته و با لحنی گرم و دوستانه به زبان فارسی ارائه بده.
+"""
+        response = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=contents,
+            config=types.GenerateContentConfig(
+                system_instruction=system_instruction,
+                temperature=0.7,
+            )
+        )
+        return response.text
+    except Exception as e:
+        return f"⚠️ خطا در تولید پاسخ: {str(e)}"
