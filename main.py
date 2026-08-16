@@ -13,6 +13,7 @@
 import os
 import sys
 import re
+import random
 import webbrowser
 import tempfile
 import datetime
@@ -160,7 +161,38 @@ IDENTITY_REPLY = (
 )
 
 
-def google_search(query: str, num_results: int = 8):
+# جوک‌ها و فکت‌های جالب فارسی برای دکمه‌ی «حوصلم سر رفته»
+FUN_ITEMS = [
+    "می‌دونستی قلب میگو تو سرشه، نه تو سینه‌ش؟ 🦐",
+    "یه بار یه بچه به معلمش گفت: خانم، بابام میگه همه‌ی سؤالای امتحان تکراریه! معلم گفت: خب جوابا رو عوض کردیم دیگه 😄",
+    "عسل تنها غذاییه که هیچ‌وقت فاسد نمی‌شه؛ تو مقبره‌های فرعون‌ها عسل چندهزارساله پیدا کردن که هنوز خوردنی بوده!",
+    "چرا کامپیوتر سردش شد؟ چون پنجره‌هاش رو باز گذاشته بود! 🪟",
+    "اختاپوس‌ها سه تا قلب دارن و خونشون آبیه.",
+    "یارو میره دکتر میگه دکتر هر وقت میخندم درد میگیره، دکتر میگه پس نخند!",
+    "یک روز رو زمین معادل ۲۴ ساعت نیست، دقیقاً ۲۳ ساعت و ۵۶ دقیقه‌ست؛ فرقش تو چهار سال یه‌بار جمع میشه.",
+    "چرا ماهی‌ها تو مدرسه درس نمی‌خونن؟ چون همیشه تو دریان! 🐟",
+    "موزها از نظر گیاه‌شناسی توت محسوب میشن، ولی توت‌فرنگی نه!",
+    "به دیوار گفتن چرا صاف نمیشینی؟ گفت من از اول کج بودم!",
+    "زرافه‌ها فقط ۲ ساعت تو شبانه‌روز می‌خوابن.",
+    "یارو زنگ می‌زنه آتش‌نشانی میگه خونه‌مون داره میسوزه زود بیاین! میگن چطوری بیایم؟ میگه با همون ماشین قرمزه دیگه!",
+    "مغز انسان تقریباً ۷۵٪ آبه.",
+    "چرا دوچرخه نمی‌تونست خودش وایسه؟ چون خیلی خسته بود! 🚲",
+    "عمر یه پروانه‌ی بالغ گاهی فقط چند روزه.",
+]
+
+
+def get_random_fun() -> str:
+    """یک جوک یا فکت جالب فارسی تصادفی برمی‌گرداند"""
+    return random.choice(FUN_ITEMS)
+
+
+def get_daily_headlines(limit: int = 4):
+    """چند تیتر خبر مهم امروز را برمی‌گرداند (بدون تحلیل مدل، فقط تیترهای خام)"""
+    try:
+        results = google_search("مهم‌ترین اخبار امروز ایران و جهان", num_results=limit)
+        return results[:limit]
+    except Exception:
+        return []
     """جستجوی خبری با استفاده از DuckDuckGo News (رایگان، بدون کلید، بدون نیاز به Billing)"""
     results = []
     with DDGS() as ddgs:
@@ -215,7 +247,7 @@ def has_latin_words(text: str) -> bool:
     return bool(re.search(r"[a-zA-Z]{2,}", text))
 
 
-def ask_openai(question: str, context: str, user_name: str = None) -> str:
+def ask_openai(question: str, context: str, user_name: str = None, history: list = None) -> str:
     from openai import OpenAI
 
     # اینجا کد هوشمند شده: کلید گروک (gsk_...) رو برمی‌داره و به سرور رایگان گروک وصل میشه
@@ -240,6 +272,11 @@ def ask_openai(question: str, context: str, user_name: str = None) -> str:
             # این مثال فقط برای یادگیری لحن سلام‌کردن است، نه الگوی همه‌ی پاسخ‌ها
             messages.append({"role": "user", "content": "سلام میکرو چطوری؟"})
             messages.append({"role": "assistant", "content": "سلام! خوبم، ممنون. تو چطوری؟"})
+        # چند پیام آخر مکالمه برای حفظ تداوم گفتگو (اگه موجود باشه)
+        if history:
+            for turn in history[-3:]:
+                messages.append({"role": "user", "content": turn.get("q", "")})
+                messages.append({"role": "assistant", "content": turn.get("a", "")})
         messages.append({"role": "user", "content": user_prompt})
 
         response = client.chat.completions.create(
@@ -257,7 +294,7 @@ def ask_openai(question: str, context: str, user_name: str = None) -> str:
     return answer
 
 
-def ask_anthropic(question: str, context: str, user_name: str = None) -> str:
+def ask_anthropic(question: str, context: str, user_name: str = None, history: list = None) -> str:
     import anthropic
     client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
@@ -271,16 +308,23 @@ def ask_anthropic(question: str, context: str, user_name: str = None) -> str:
     else:
         user_prompt = f"سؤال کاربر: {question}\n\n(این یک گفتگوی معمولی است، نیازی به جستجو نیست، طبیعی جواب بده.)"
 
+    messages = []
+    if history:
+        for turn in history[-3:]:
+            messages.append({"role": "user", "content": turn.get("q", "")})
+            messages.append({"role": "assistant", "content": turn.get("a", "")})
+    messages.append({"role": "user", "content": user_prompt})
+
     message = client.messages.create(
         model="claude-sonnet-4-6",
         max_tokens=1000,
         system=system_prompt,
-        messages=[{"role": "user", "content": user_prompt}],
+        messages=messages,
     )
     return message.content[0].text
 
 
-def ask_ollama(question: str, context: str, user_name: str = None) -> str:
+def ask_ollama(question: str, context: str, user_name: str = None, history: list = None) -> str:
     """استفاده از مدل رایگان و محلی از طریق Ollama (بدون نیاز به کلید API یا پرداخت)"""
     system_prompt = get_persona_prompt(user_name)
     kind = message_kind(question)
@@ -292,12 +336,16 @@ def ask_ollama(question: str, context: str, user_name: str = None) -> str:
     else:
         user_prompt = f"سؤال کاربر: {question}\n\n(این یک گفتگوی معمولی است، نیازی به جستجو نیست، طبیعی جواب بده.)"
 
+    messages = [{"role": "system", "content": system_prompt}]
+    if history:
+        for turn in history[-3:]:
+            messages.append({"role": "user", "content": turn.get("q", "")})
+            messages.append({"role": "assistant", "content": turn.get("a", "")})
+    messages.append({"role": "user", "content": user_prompt})
+
     payload = {
         "model": OLLAMA_MODEL,
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ],
+        "messages": messages,
         "stream": False,
     }
 
@@ -342,7 +390,7 @@ def show_in_browser(question: str, answer: str):
     webbrowser.open(f"file://{path}")
 
 
-def answer_question(question: str, user_name: str = None) -> str:
+def answer_question(question: str, user_name: str = None, history: list = None) -> str:
     kind = message_kind(question)
 
     # سؤالات هویتی هرگز به مدل هوش مصنوعی نمی‌رن؛ جواب ثابت و تضمینی از پایتون برمی‌گرده
@@ -366,11 +414,11 @@ def answer_question(question: str, user_name: str = None) -> str:
 
     print("🤖 در حال تولید پاسخ با هوش مصنوعی...")
     if LLM_PROVIDER == "anthropic":
-        return ask_anthropic(question, context, user_name)
+        return ask_anthropic(question, context, user_name, history)
     elif LLM_PROVIDER == "openai":
-        return ask_openai(question, context, user_name)
+        return ask_openai(question, context, user_name, history)
     else:
-        return ask_ollama(question, context, user_name)
+        return ask_ollama(question, context, user_name, history)
 
 
 def main():
@@ -399,6 +447,7 @@ def main():
         user_name = "دوست عزیز"
 
     print(f"\nخوش اومدی {user_name}! 🎉")
+    chat_history = []
 
     while True:
         question = input(f"\n❓ من آماده‌ام {user_name}: ").strip()
@@ -409,7 +458,9 @@ def main():
             continue
 
         try:
-            answer = answer_question(question, user_name)
+            answer = answer_question(question, user_name, chat_history)
+            chat_history.append({"q": question, "a": answer})
+            chat_history = chat_history[-5:]
             print("\n✅ پاسخ آماده شد! در حال باز کردن در مرورگر...\n")
             show_in_browser(question, answer)
         except Exception as e:
