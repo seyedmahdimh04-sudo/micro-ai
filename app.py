@@ -120,7 +120,7 @@ PAGE_TEMPLATE = """
     <div class="header-bar">
         <div>
             <a href="/join_channel" target="_blank" class="join-channel-btn">
-                📢 عضویت در کانال میکرو {% if bonus_available %}(+۴۰ سکه هدیه){% endif %}
+                📢 عضویت در کانال میکرو {% if bonus_available %}(+۳۰ سکه هدیه){% endif %}
             </a>
         </div>
 

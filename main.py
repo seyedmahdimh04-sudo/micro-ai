@@ -88,7 +88,7 @@ def claim_channel_bonus(user_id: str) -> bool:
     c.execute("SELECT has_channel_bonus FROM users WHERE user_id = ?", (str(user_id),))
     row = c.fetchone()
     if row and row[0] == 0:
-        c.execute("UPDATE users SET coins = coins + 40, has_channel_bonus = 1 WHERE user_id = ?", (str(user_id),))
+        c.execute("UPDATE users SET coins = coins + 30, has_channel_bonus = 1 WHERE user_id = ?", (str(user_id),))
         conn.commit()
         conn.close()
         return True
@@ -130,14 +130,27 @@ def answer_question(question: str, user_name: str = None, history: list = None):
 نام کاربر: {user_name or 'دوست من'}.
 پاسخ‌ها را کامل، ساختاریافته و با لحنی گرم و دوستانه به زبان فارسی ارائه بده.
 """
-        response = client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=contents,
-            config=types.GenerateContentConfig(
-                system_instruction=system_instruction,
-                temperature=0.7,
-            )
-        )
+        # اگه یه مدل به هر دلیلی در دسترس نبود (منسوخ شد و غیره)، خودکار مدل بعدی رو امتحان کن
+        candidate_models = ["gemini-flash-latest", "gemini-2.5-flash-lite", "gemini-flash-lite-latest"]
+        last_error = None
+        response = None
+        for model_name in candidate_models:
+            try:
+                response = client.models.generate_content(
+                    model=model_name,
+                    contents=contents,
+                    config=types.GenerateContentConfig(
+                        system_instruction=system_instruction,
+                        temperature=0.7,
+                    )
+                )
+                break
+            except Exception as inner_e:
+                last_error = inner_e
+                continue
+
+        if response is None:
+            raise last_error if last_error else RuntimeError("هیچ مدلی در دسترس نبود")
         return response.text, True
     except Exception as e:
         err_msg = str(e)

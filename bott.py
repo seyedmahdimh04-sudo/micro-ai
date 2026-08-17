@@ -9,7 +9,8 @@ import requests
 from dotenv import load_dotenv
 from main import (
     answer_question, get_or_create_user, get_user_coins,
-    add_user_coins, deduct_user_coins, get_daily_micro_greeting
+    add_user_coins, deduct_user_coins, get_daily_micro_greeting,
+    claim_channel_bonus
 )
 
 load_dotenv(encoding="utf-8-sig")
@@ -17,6 +18,7 @@ load_dotenv(encoding="utf-8-sig")
 BALE_TOKEN = os.getenv("BALE_BOT_TOKEN")
 PROVIDER_TOKEN = os.getenv("BALE_PAYMENT_PROVIDER_TOKEN", "WALLET-TEST-1111111111111111")
 ADMIN_UID = os.getenv("ADMIN_UID", "admin_persian_ai")
+CHANNEL_LINK = "https://ble.ir/persian_ai"
 BASE_URL = f"https://tapi.bale.ai/bot{BALE_TOKEN}"
 
 COIN_PACKAGES = {
@@ -44,13 +46,13 @@ def send_main_menu(chat_id: int, user_name: str):
     text = (
         f"🤖 {greeting}\n\n"
         f"🪙 موجودی سکه شما: {coins}\n"
-        "✨ عضویت در کانال میکرو = ۴۰ سکه رایگان\n\n"
+        "✨ عضویت در کانال میکرو = ۳۰ سکه رایگان\n\n"
         "یکی از گزینه‌های زیر را انتخاب کنید:"
     )
     keyboard = {
         "keyboard": [
             [{"text": "💬 ارتباط با میکرو"}, {"text": "🪙 افزایش اعتبار و خرید سکه"}],
-            [{"text": "👨‍💻 پشتیبانی"}]
+            [{"text": "📢 عضویت در کانال (+۳۰ سکه)"}, {"text": "👨‍💻 پشتیبانی"}]
         ],
         "resize_keyboard": True
     }
@@ -140,6 +142,21 @@ def run_bot():
                 if text == "/start":
                     user_states[chat_id] = "normal"
                     send_main_menu(chat_id, user_name)
+                    continue
+
+                if text == "📢 عضویت در کانال (+۳۰ سکه)":
+                    got_bonus = claim_channel_bonus(user_id)
+                    if got_bonus:
+                        call_api("sendMessage", {
+                            "chat_id": chat_id,
+                            "text": f"🎉 عالی! ۳۰ سکه به موجودی شما اضافه شد.\nبرای عضویت در کانال (اگه هنوز عضو نیستی) اینجا بزن:\n{CHANNEL_LINK}"
+                        })
+                        send_main_menu(chat_id, user_name)
+                    else:
+                        call_api("sendMessage", {
+                            "chat_id": chat_id,
+                            "text": f"شما قبلاً این پاداش رو دریافت کردید 😊\nکانال: {CHANNEL_LINK}"
+                        })
                     continue
 
                 if text == "🪙 افزایش اعتبار و خرید سکه":
