@@ -5,7 +5,6 @@
 
 import os
 import secrets
-import json
 from datetime import timedelta
 from flask import Flask, request, render_template_string, session, redirect, url_for, jsonify, Response
 from main import (
@@ -20,7 +19,9 @@ app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(days=30)
 
 SITE_NAME = "هوش مصنوعی میکرو"
 
-# همون قالب خودت + استایل‌های دکمه لایک و مودال
+# 🔥 راه حل مشکل: استفاده از یک دیکشنری در رم سرور به جای session که موقع استریم کرش نکنه!
+USER_CHAT_HISTORY = {}
+
 PAGE_TEMPLATE = """
 <!DOCTYPE html>
 <html dir="rtl" lang="fa">
@@ -116,8 +117,6 @@ PAGE_TEMPLATE = """
         .footer-credits a { color: var(--muted); text-decoration: none; }
         .footer-credits a:hover { color: var(--accent); }
 
-        /* --- قابلیت‌های جدید میکرو اضافه شده در اینجا --- */
-        
         /* دایره چرخان خفن (نشانگر فکر کردن) */
         .spinner {
             width: 22px; height: 22px; border: 3px solid rgba(34, 197, 94, 0.2);
@@ -136,7 +135,7 @@ PAGE_TEMPLATE = """
         .action-btns button.like:hover { color: var(--accent); }
         .action-btns button.dislike:hover { color: #ef4444; }
 
-        /* پاپ‌آپ گرفتن اسم اول کار */
+        /* پاپ‌آپ گرفتن اسم */
         .modal-overlay {
             position: fixed; top: 0; left: 0; width: 100%; height: 100%;
             background: rgba(0,0,0,0.85); backdrop-filter: blur(5px);
@@ -207,20 +206,16 @@ PAGE_TEMPLATE = """
         {% if not history %}
         <div class="cards-grid" id="cardsGrid">
             <div class="feature-card" onclick="sendPrompt('بمب انرژی و انگیزه روزانه برای پیشرفت')">
-                <span class="card-text">بمب انرژی و انگیزه روزانه</span>
-                <span>🔥</span>
+                <span class="card-text">بمب انرژی و انگیزه روزانه</span><span>🔥</span>
             </div>
             <div class="feature-card" onclick="sendPrompt('چند دانستنی و گیم جذاب به من معرفی کن')">
-                <span class="card-text">دنیای گیم و سرگرمی</span>
-                <span>🎮</span>
+                <span class="card-text">دنیای گیم و سرگرمی</span><span>🎮</span>
             </div>
             <div class="feature-card" onclick="sendPrompt('ایده‌های ناب برنامه‌نویسی و هوش مصنوعی بده')">
-                <span class="card-text">ایده‌های ناب برنامه‌نویسی</span>
-                <span>🚀</span>
+                <span class="card-text">ایده‌های ناب برنامه‌نویسی</span><span>🚀</span>
             </div>
             <div class="feature-card" onclick="sendPrompt('شگفتی‌ها و اسرار علمی نجوم و فضا را بگو')">
-                <span class="card-text">اسرار علمی نجوم و فضا</span>
-                <span>🌌</span>
+                <span class="card-text">اسرار علمی نجوم و فضا</span><span>🌌</span>
             </div>
         </div>
         {% endif %}
@@ -232,7 +227,6 @@ PAGE_TEMPLATE = """
             {% endfor %}
         </div>
 
-        <!-- فرم استریم شد -->
         <form onsubmit="event.preventDefault(); sendStreamPrompt();" id="chatForm">
             <div class="input-bar">
                 <input type="text" id="chatInput" placeholder="اینجا با من گپ بزن..." autocomplete="off" autofocus required>
@@ -289,11 +283,10 @@ PAGE_TEMPLATE = """
             
             input.value = '';
             const grid = document.getElementById('cardsGrid');
-            if(grid) grid.style.display = 'none'; // مخفی کردن کارت‌ها بعد از پیام اول
+            if(grid) grid.style.display = 'none'; 
 
             createBubble(text, 'user');
             
-            // نمایش دایره چرخان فکر کردن
             const botRowId = 'bot-' + Date.now();
             const botRow = createBubble('<div class="spinner"></div>', 'assistant', botRowId);
             const botBubble = botRow.querySelector('.chat-bubble');
@@ -322,14 +315,13 @@ PAGE_TEMPLATE = """
                     currentAnswer += chunk;
                     
                     if (isFirstChunk) {
-                        botBubble.innerHTML = ""; // حذف دایره و شروع تایپ
+                        botBubble.innerHTML = ""; 
                         isFirstChunk = false;
                     }
                     botBubble.innerHTML = currentAnswer.replace(/\\n/g, '<br>');
                     feed.scrollTop = feed.scrollHeight;
                 }
 
-                // اضافه کردن دکمه‌های بازخورد
                 const btns = document.createElement('div');
                 btns.className = "action-btns";
                 btns.innerHTML = `
@@ -339,7 +331,6 @@ PAGE_TEMPLATE = """
                 `;
                 botRow.appendChild(btns);
 
-                // آپدیت موجودی سکه در صفحه
                 const coinRes = await fetch('/get_coins');
                 const coinData = await coinRes.json();
                 document.getElementById('coinDisplay').innerText = `🪙 ${coinData.coins} سکه`;
@@ -373,7 +364,6 @@ PAGE_TEMPLATE = """
 </html>
 """
 
-# قالب پنل ادمین
 ADMIN_TEMPLATE = """
 <!DOCTYPE html>
 <html dir="rtl" lang="fa">
@@ -420,9 +410,11 @@ def index():
     session["uid"] = user_id
     user_data = get_or_create_user(user_id)
     
-    # اگر کاربر اسمش "کاربر" باشه (یعنی تازه اومده) مدال براش باز میشه
     show_onboarding = (user_data["username"] == "کاربر")
     is_admin = (user_id == "admin_persian_ai")
+
+    # گرفتن تاریخچه از متغیر رم به جای session
+    history = USER_CHAT_HISTORY.get(user_id, [])
 
     return render_template_string(
         PAGE_TEMPLATE,
@@ -430,7 +422,7 @@ def index():
         greeting=get_daily_micro_greeting(user_data["username"] if not show_onboarding else ""),
         coins=user_data["coins"],
         bonus_available=not user_data["has_channel_bonus"],
-        history=session.get("history", []),
+        history=history,
         show_onboarding=show_onboarding,
         is_admin=is_admin
     )
@@ -443,20 +435,28 @@ def chat_stream():
     
     user_data = get_or_create_user(user_id)
     
-    # ادمین سکه نامحدود داره
     if user_id != "admin_persian_ai" and user_data["coins"] < 5:
         return Response("سکه کافی نیست", status=402)
 
+    # گرفتن تاریخچه خارج از استریم که باگ نده! 🔥
+    if user_id not in USER_CHAT_HISTORY:
+        USER_CHAT_HISTORY[user_id] = []
+    current_history = USER_CHAT_HISTORY[user_id]
+
     def generate():
-        history = session.get("history", [])
         success = False
+        full_answer = ""
         
-        for chunk in answer_question_stream(question, user_data["username"], history):
+        for chunk in answer_question_stream(question, user_data["username"], current_history):
             success = True 
+            full_answer += chunk
             yield chunk
 
         if success:
             deduct_user_coins(user_id, 5)
+            # ذخیره پیام جدید تو تاریخچه رم سرور
+            current_history.append({"q": question, "a": full_answer})
+            USER_CHAT_HISTORY[user_id] = current_history[-10:]
 
     return Response(generate(), mimetype="text/plain")
 
