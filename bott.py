@@ -18,7 +18,9 @@ load_dotenv(encoding="utf-8-sig")
 BALE_TOKEN = os.getenv("BALE_BOT_TOKEN")
 PROVIDER_TOKEN = os.getenv("BALE_PAYMENT_PROVIDER_TOKEN", "WALLET-TEST-1111111111111111")
 ADMIN_UID = os.getenv("ADMIN_UID", "admin_persian_ai")
-CHANNEL_LINK = "https://ble.ir/persian_ai"
+CHANNEL_LINK = "https://ble.ir/micro_ai"
+CHANNEL_BONUS = 25
+COST_PER_MESSAGE = 1
 BASE_URL = f"https://tapi.bale.ai/bot{BALE_TOKEN}"
 
 COIN_PACKAGES = {
@@ -46,13 +48,14 @@ def send_main_menu(chat_id: int, user_name: str):
     text = (
         f"🤖 {greeting}\n\n"
         f"🪙 موجودی سکه شما: {coins}\n"
-        "✨ عضویت در کانال میکرو = ۳۰ سکه رایگان\n\n"
+        f"✨ عضویت در کانال میکرو = {CHANNEL_BONUS} سکه رایگان\n"
+        f"💬 هر پیام فقط {COST_PER_MESSAGE} سکه\n\n"
         "یکی از گزینه‌های زیر را انتخاب کنید:"
     )
     keyboard = {
         "keyboard": [
             [{"text": "💬 ارتباط با میکرو"}, {"text": "🪙 افزایش اعتبار و خرید سکه"}],
-            [{"text": "📢 عضویت در کانال (+۳۰ سکه)"}, {"text": "👨‍💻 پشتیبانی"}]
+            [{"text": f"📢 عضویت در کانال (+{CHANNEL_BONUS} سکه)"}, {"text": "👨‍💻 پشتیبانی"}]
         ],
         "resize_keyboard": True
     }
@@ -144,12 +147,12 @@ def run_bot():
                     send_main_menu(chat_id, user_name)
                     continue
 
-                if text == "📢 عضویت در کانال (+۳۰ سکه)":
+                if text == f"📢 عضویت در کانال (+{CHANNEL_BONUS} سکه)":
                     got_bonus = claim_channel_bonus(user_id)
                     if got_bonus:
                         call_api("sendMessage", {
                             "chat_id": chat_id,
-                            "text": f"🎉 عالی! ۳۰ سکه به موجودی شما اضافه شد.\nبرای عضویت در کانال (اگه هنوز عضو نیستی) اینجا بزن:\n{CHANNEL_LINK}"
+                            "text": f"🎉 عالی! {CHANNEL_BONUS} سکه به موجودی شما اضافه شد.\nبرای عضویت در کانال (اگه هنوز عضو نیستی) اینجا بزن:\n{CHANNEL_LINK}"
                         })
                         send_main_menu(chat_id, user_name)
                     else:
@@ -180,18 +183,18 @@ def run_bot():
 
                 if user_states.get(chat_id) == "chatting" or not text.startswith("/"):
                     current_coins = get_user_coins(user_id)
-                    if current_coins >= 5:
+                    if current_coins >= COST_PER_MESSAGE:
                         hist = user_histories.get(chat_id, [])
                         ans, success = answer_question(text, user_name, hist)
                         
                         if success:
-                            deduct_user_coins(user_id, 5)
+                            deduct_user_coins(user_id, COST_PER_MESSAGE)
                             hist.append({"q": text, "a": ans})
                             user_histories[chat_id] = hist[-10:]
                             rem = get_user_coins(user_id)
                             call_api("sendMessage", {
                                 "chat_id": chat_id,
-                                "text": f"{ans}\n\n─────────────\n🪙 ۵ سکه کسر شد (باقی‌مانده: {rem})"
+                                "text": f"{ans}\n\n─────────────\n🪙 {COST_PER_MESSAGE} سکه کسر شد (باقی‌مانده: {rem})"
                             })
                         else:
                             call_api("sendMessage", {

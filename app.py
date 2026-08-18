@@ -1,16 +1,16 @@
 """
-وب‌سایت هوش مصنوعی «میکرو»
+وب‌سایت هوش مصنوعی «میکرو» - نسخه پیشرفته با چت زنده (AJAX)، لوگو، بازخورد و پنل مدیریت
 اجرا: python app.py
 """
 
 import os
 import secrets
 from datetime import timedelta
-from flask import Flask, request, render_template_string, session, redirect, url_for, jsonify, Response
+from flask import Flask, request, render_template_string, session, redirect, url_for, jsonify
 from main import (
-    get_daily_micro_greeting, get_or_create_user, get_user_coins, 
-    deduct_user_coins, claim_channel_bonus, set_user_name, 
-    answer_question_stream, save_feedback, get_admin_stats
+    answer_question, get_daily_micro_greeting, get_or_create_user,
+    get_user_coins, deduct_user_coins, claim_channel_bonus,
+    get_total_users, save_feedback, get_all_feedback
 )
 
 app = Flask(__name__)
@@ -18,81 +18,126 @@ app.secret_key = os.getenv("SECRET_KEY", secrets.token_hex(16))
 app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(days=30)
 
 SITE_NAME = "هوش مصنوعی میکرو"
+LOGO_URL = "https://uploadkon.ir/uploads/805818_26ChatGPT-Image-Aug-18-2026-01-02-18-PM.png"
+CHANNEL_LINK = "https://ble.ir/micro_ai"
+ADMIN_SECRET = os.getenv("ADMIN_SECRET", "seyedmahdi_amirmz")
+COST_PER_MESSAGE = 1
+CHANNEL_BONUS_COINS = 25
+CHANNEL_DWELL_SECONDS = 15
 
-# 🔥 راه حل مشکل: استفاده از یک دیکشنری در رم سرور به جای session که موقع استریم کرش نکنه!
-USER_CHAT_HISTORY = {}
 
+# ---------------------------------------------------------------------------
+# صفحه‌ی خوش‌آمد (پرسیدن اسم)
+# ---------------------------------------------------------------------------
+WELCOME_TEMPLATE = """
+<!DOCTYPE html>
+<html dir="rtl" lang="fa">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="icon" href="{{ logo }}">
+    <title>{{ site_name }}</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; font-family: Tahoma, 'Segoe UI', sans-serif; }
+        body {
+            background: radial-gradient(circle at top, #161b22, #090c10);
+            color: #f0f6fc; min-height: 100vh; display: flex; align-items: center; justify-content: center;
+        }
+        .box { text-align: center; padding: 40px; max-width: 420px; }
+        .box img { width: 78px; height: 78px; border-radius: 20px; margin-bottom: 16px; box-shadow: 0 0 30px rgba(34,197,94,0.35); }
+        .box h1 { font-size: 22px; margin-bottom: 6px; }
+        .box p.sub { color: #8b949e; margin-bottom: 26px; font-size: 15px; }
+        input[type=text] {
+            width: 100%; padding: 14px 18px; border-radius: 12px; border: 1px solid rgba(255,255,255,0.15);
+            background: #161b22; color: #eee; font-size: 16px; margin-bottom: 14px; text-align: center;
+        }
+        button {
+            width: 100%; padding: 14px; border-radius: 12px; border: none;
+            background: #22c55e; color: #06210f; font-weight: bold; font-size: 16px; cursor: pointer;
+        }
+        button:hover { opacity: 0.9; }
+    </style>
+</head>
+<body>
+    <div class="box">
+        <img src="{{ logo }}" alt="میکرو">
+        <h1>سلام 👋<br>من میکرو هستم، چت‌بات persian_ai!</h1>
+        <p class="sub">اسم شما؟</p>
+        <form method="POST" action="/start">
+            <input type="text" name="user_name" placeholder="اسم شما؟" autofocus required>
+            <button type="submit">شروع گفتگو</button>
+        </form>
+    </div>
+</body>
+</html>
+"""
+
+# ---------------------------------------------------------------------------
+# قالب اصلی چت (AJAX + جلوه‌ی فکر کردن + تایپ زنده)
+# ---------------------------------------------------------------------------
 PAGE_TEMPLATE = """
 <!DOCTYPE html>
 <html dir="rtl" lang="fa">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="icon" href="{{ logo }}">
     <title>{{ site_name }}</title>
-    <link href="https://cdn.jsdelivr.net/gh/rastikerdar/vazirmatn@v33.003/Vazirmatn-font-face.css" rel="stylesheet">
     <style>
-        * { box-sizing: border-box; margin: 0; padding: 0; font-family: Vazirmatn, Tahoma, sans-serif; }
+        * { box-sizing: border-box; margin: 0; padding: 0; font-family: Tahoma, 'Segoe UI', sans-serif; }
         :root {
             --bg1: #090c10; --bg2: #0d1117; --card: #161b22; --border: rgba(255,255,255,0.1);
-            --accent: #22c55e; --text: #f0f6fc; --muted: #8b949e; --btn-bg: #21262d;
-        }
-        body.theme-light {
-            --bg1: #f6f8fa; --bg2: #ffffff; --card: #eaeef2; --border: rgba(0,0,0,0.1);
-            --accent: #16a34a; --text: #1f2328; --muted: #656d76; --btn-bg: #d0d7de;
-        }
-        body.theme-colorful {
-            --bg1: #1a0b2e; --bg2: #261245; --card: #3b1b6d; --border: rgba(255,255,255,0.15);
-            --accent: #ec4899; --text: #ffffff; --muted: #d8b4fe; --btn-bg: #4c1d95;
+            --accent: #22c55e; --text: #f0f6fc; --muted: #8b949e;
         }
         body {
             background: radial-gradient(circle at top, var(--bg2), var(--bg1));
-            color: var(--text); min-height: 100vh; display: flex; flex-direction: column; justify-content: space-between;
+            color: var(--text); min-height: 100vh; display: flex; flex-direction: column;
         }
         .header-bar {
             display: flex; justify-content: space-between; align-items: center;
             padding: 12px 20px; border-bottom: 1px solid var(--border);
-            background: rgba(0,0,0,0.2); backdrop-filter: blur(10px);
+        }
+        .brand { display: flex; align-items: center; gap: 10px; }
+        .brand img {
+            width: 34px; height: 34px; border-radius: 9px; transition: transform 0.35s ease;
+        }
+        .brand img.thinking { animation: pulseLogo 0.9s ease-in-out infinite; }
+        @keyframes pulseLogo {
+            0%, 100% { transform: scale(1); }
+            50% { transform: scale(1.35); }
+        }
+        .brand span { font-weight: 800; font-size: 15px; }
+        .user-balance {
+            background: rgba(34,197,94,0.15); border: 1px solid var(--accent);
+            color: var(--accent); padding: 6px 14px; border-radius: 999px; font-size: 12px; font-weight: 700;
+        }
+        .header-right { display: flex; align-items: center; gap: 10px; }
+        .admin-link { color: var(--muted); font-size: 12px; text-decoration: none; }
+
+        .join-channel-bar {
+            display: flex; justify-content: center; padding: 8px;
         }
         .join-channel-btn {
             background: linear-gradient(135deg, #0ea5e9, #2563eb);
             color: #fff; text-decoration: none; padding: 7px 16px; border-radius: 999px;
-            font-size: 13px; font-weight: 700; display: flex; align-items: center; gap: 6px;
-            box-shadow: 0 4px 12px rgba(14,165,233,0.3); transition: 0.2s;
+            font-size: 12px; font-weight: 700;
         }
-        .join-channel-btn:hover { opacity: 0.9; transform: scale(1.03); }
-        .user-balance {
-            background: rgba(34,197,94,0.15); border: 1px solid var(--accent);
-            color: var(--accent); padding: 6px 14px; border-radius: 999px; font-size: 13px; font-weight: 700;
-        }
-        .theme-buttons { display: flex; gap: 6px; }
-        .theme-btn {
-            background: var(--card); border: 1px solid var(--border);
-            color: var(--text); padding: 4px 8px; border-radius: 8px; font-size: 11px; cursor: pointer;
-        }
-        .main-container { max-width: 820px; width: 100%; margin: 0 auto; padding: 20px; flex: 1; display: flex; flex-direction: column; }
-        .hero-banner { text-align: center; margin: 15px 0 25px; }
-        .hero-rocket { font-size: 44px; margin-bottom: 10px; animation: float 3s ease-in-out infinite; }
-        @keyframes float { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-8px); } }
-        .hero-title { font-size: 26px; font-weight: 800; color: var(--accent); margin-bottom: 6px; }
 
-        .cards-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 20px; }
-        .feature-card {
-            background: var(--card); border: 1px solid var(--border);
-            padding: 16px; border-radius: 16px; cursor: pointer;
-            display: flex; align-items: center; justify-content: space-between; transition: 0.2s;
-        }
-        .feature-card:hover { border-color: var(--accent); transform: translateY(-2px); }
-        .card-text { font-size: 14px; font-weight: 600; }
-        
-        .chat-feed { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 14px; margin-bottom: 15px; }
-        .chat-row { display: flex; gap: 10px; flex-direction: column; }
-        .chat-row.user { align-items: flex-end; }
-        .chat-row.assistant { align-items: flex-start; }
-        .chat-bubble {
-            max-width: 80%; padding: 12px 18px; border-radius: 16px; font-size: 14px; line-height: 1.8;
-        }
+        .main-container { max-width: 780px; width: 100%; margin: 0 auto; padding: 16px 20px; flex: 1; display: flex; flex-direction: column; }
+        .chat-feed { flex: 1; display: flex; flex-direction: column; gap: 14px; margin-bottom: 15px; overflow-y: auto; }
+        .chat-row { display: flex; gap: 10px; }
+        .chat-row.user { justify-content: flex-end; }
+        .chat-bubble { max-width: 82%; padding: 12px 18px; border-radius: 16px; font-size: 14px; line-height: 1.85; white-space: pre-wrap; }
         .chat-row.user .chat-bubble { background: #2563eb; color: #fff; border-bottom-left-radius: 4px; }
         .chat-row.assistant .chat-bubble { background: var(--card); border: 1px solid var(--border); border-bottom-right-radius: 4px; }
+
+        .assistant-wrap { display: flex; flex-direction: column; gap: 6px; max-width: 82%; }
+        .msg-actions { display: flex; gap: 8px; padding-right: 4px; }
+        .msg-actions button {
+            background: transparent; border: none; color: var(--muted); cursor: pointer; font-size: 13px;
+        }
+        .msg-actions button.active-like { color: #22c55e; }
+        .msg-actions button.active-dislike { color: #ef4444; }
 
         .input-bar {
             background: var(--card); border: 1px solid var(--border);
@@ -104,261 +149,183 @@ PAGE_TEMPLATE = """
         }
         .send-btn {
             background: var(--accent); border: none; width: 40px; height: 40px;
-            border-radius: 50%; display: flex; align-items: center; justify-content: center;
-            color: #000; font-size: 18px; cursor: pointer; transition: 0.2s;
+            border-radius: 50%; color: #000; font-size: 18px; cursor: pointer;
         }
-        .send-btn:hover { transform: scale(1.05); }
+        .send-btn:disabled { opacity: 0.5; }
 
-        .footer-credits {
-            text-align: center; padding: 15px 20px; font-size: 11px;
-            color: var(--muted); border-top: 1px solid var(--border);
-            display: flex; justify-content: space-around; flex-wrap: wrap; gap: 10px;
-        }
-        .footer-credits a { color: var(--muted); text-decoration: none; }
-        .footer-credits a:hover { color: var(--accent); }
+        .error-msg { background: #3a1420; border: 1px solid #ef4444; color: #ffb3c0; padding: 12px 16px; border-radius: 12px; font-size: 13px; text-align: center; }
 
-        /* دایره چرخان خفن (نشانگر فکر کردن) */
-        .spinner {
-            width: 22px; height: 22px; border: 3px solid rgba(34, 197, 94, 0.2);
-            border-top-color: var(--accent); border-radius: 50%;
-            animation: spin 1s linear infinite; display: inline-block;
-        }
-        @keyframes spin { 100% { transform: rotate(360deg); } }
-
-        /* دکمه‌های بازخورد */
-        .action-btns { display: flex; gap: 10px; margin-top: 6px; padding: 0 5px; }
-        .action-btns button { 
-            background: transparent; border: none; color: var(--muted); cursor: pointer; 
-            font-size: 13px; display: flex; align-items: center; gap: 4px; transition: 0.2s;
-        }
-        .action-btns button:hover { color: var(--text); transform: scale(1.1); }
-        .action-btns button.like:hover { color: var(--accent); }
-        .action-btns button.dislike:hover { color: #ef4444; }
-
-        /* پاپ‌آپ گرفتن اسم */
-        .modal-overlay {
-            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
-            background: rgba(0,0,0,0.85); backdrop-filter: blur(5px);
-            display: flex; align-items: center; justify-content: center; z-index: 1000;
-        }
-        .modal-box {
-            background: var(--card); padding: 25px; border-radius: 15px; 
-            border: 1px solid var(--border); text-align: center; width: 90%; max-width: 350px;
-        }
-        .modal-box p { font-size: 16px; margin-bottom: 15px; white-space: pre-line; line-height: 1.8; }
-        .modal-box input {
-            width: 100%; padding: 12px; border-radius: 10px; border: 1px solid var(--border);
-            background: var(--bg1); color: var(--text); text-align: center; font-size: 15px; outline: none; margin-bottom: 15px;
-        }
-        .modal-box button {
-            background: var(--accent); color: #000; border: none; padding: 10px 20px;
-            border-radius: 10px; font-weight: bold; cursor: pointer; width: 100%;
-        }
+        footer { text-align: center; padding: 12px 20px; font-size: 11px; color: var(--muted); border-top: 1px solid var(--border); }
     </style>
 </head>
-<body class="theme-dark" id="pageBody">
-
-    <!-- Onboarding Modal -->
-    {% if show_onboarding %}
-    <div class="modal-overlay" id="onboardingModal">
-        <div class="modal-box">
-            <p style="font-weight: bold; font-size: 18px;">سلام👋<br>من میکرو هستم، چت بات persian_ai!</p>
-            <div style="font-family: monospace; color: var(--accent); margin-bottom: 10px;">
-                --------------------------<br>
-                |           اسم شما؟        |<br>
-                ------------------------
-            </div>
-            <input type="text" id="nameInput" placeholder="اینجا اسمت رو بنویس...">
-            <button onclick="saveName()">ثبت</button>
+<body>
+    <div class="header-bar">
+        <div class="brand">
+            <img src="{{ logo }}" id="brandLogo" alt="میکرو">
+            <span>میکرو</span>
+        </div>
+        <div class="header-right">
+            {% if admin %}<a class="admin-link" href="/admin">📊 پنل مدیریت</a>{% endif %}
+            <div class="user-balance">🪙 <span id="coinBadge">{{ coins }}</span> سکه</div>
         </div>
     </div>
-    {% endif %}
 
-    <div class="header-bar">
-        <div style="display: flex; gap: 10px;">
-            <a href="/join_channel" target="_blank" class="join-channel-btn">
-                📢 عضویت در کانال میکرو {% if bonus_available %}(+۳۰ سکه هدیه){% endif %}
-            </a>
-            {% if is_admin %}
-            <a href="/admin" class="join-channel-btn" style="background: #ef4444; box-shadow: 0 4px 12px rgba(239, 68, 68, 0.3);">
-                👑 پنل مدیریت
-            </a>
-            {% endif %}
-        </div>
-
-        <div style="display:flex; align-items:center; gap:10px;">
-            <div class="user-balance" id="coinDisplay">🪙 {{ coins }} سکه</div>
-            <a href="https://ble.ir/micro_ai_bot" target="_blank" style="background:#eab308; color:#000; text-decoration:none; padding:6px 12px; border-radius:999px; font-size:12px; font-weight:700;">خرید سکه</a>
-            <div class="theme-buttons">
-                <button class="theme-btn" onclick="setTheme('dark')">🌙</button>
-                <button class="theme-btn" onclick="setTheme('light')">☀️</button>
-                <button class="theme-btn" onclick="setTheme('colorful')">🎨</button>
-            </div>
-        </div>
+    <div class="join-channel-bar">
+        <a href="{{ channel_link }}" target="_blank" id="channelLink" class="join-channel-btn">📢 عضویت در کانال میکرو (+۲۵ سکه)</a>
     </div>
 
     <div class="main-container">
-        <div class="hero-banner">
-            <div class="hero-rocket">🚀</div>
-            <h1 class="hero-title">{{ greeting }}</h1>
-        </div>
-
-        {% if not history %}
-        <div class="cards-grid" id="cardsGrid">
-            <div class="feature-card" onclick="sendPrompt('بمب انرژی و انگیزه روزانه برای پیشرفت')">
-                <span class="card-text">بمب انرژی و انگیزه روزانه</span><span>🔥</span>
-            </div>
-            <div class="feature-card" onclick="sendPrompt('چند دانستنی و گیم جذاب به من معرفی کن')">
-                <span class="card-text">دنیای گیم و سرگرمی</span><span>🎮</span>
-            </div>
-            <div class="feature-card" onclick="sendPrompt('ایده‌های ناب برنامه‌نویسی و هوش مصنوعی بده')">
-                <span class="card-text">ایده‌های ناب برنامه‌نویسی</span><span>🚀</span>
-            </div>
-            <div class="feature-card" onclick="sendPrompt('شگفتی‌ها و اسرار علمی نجوم و فضا را بگو')">
-                <span class="card-text">اسرار علمی نجوم و فضا</span><span>🌌</span>
-            </div>
-        </div>
-        {% endif %}
-
-        <div class="chat-feed" id="chatFeed">
-            {% for item in history %}
-                <div class="chat-row user"><div class="chat-bubble">{{ item.q }}</div></div>
-                <div class="chat-row assistant"><div class="chat-bubble">{{ item.a | replace('\n', '<br>') | safe }}</div></div>
-            {% endfor %}
-        </div>
-
-        <form onsubmit="event.preventDefault(); sendStreamPrompt();" id="chatForm">
+        <div class="chat-feed" id="chatFeed"></div>
+        <div id="errorBox"></div>
+        <form id="chatForm" onsubmit="return false;">
             <div class="input-bar">
-                <input type="text" id="chatInput" placeholder="اینجا با من گپ بزن..." autocomplete="off" autofocus required>
-                <button type="submit" class="send-btn">➤</button>
+                <input type="text" id="chatInput" placeholder="اینجا با من گپ بزن..." autofocus>
+                <button type="submit" class="send-btn" id="sendBtn" onclick="sendMessage()">➤</button>
             </div>
         </form>
     </div>
 
-    <div class="footer-credits">
-        <span>جهت ارتباط با پشتیبان (بله): <a href="https://ble.ir/admin_persian_ai" target="_blank">@admin_persian_ai</a></span>
-        <span>کانال توسعه‌دهنده (بله): <a href="https://ble.ir/persian_Ai" target="_blank">@persian_Ai</a></span>
-    </div>
+    <footer>ساخته شده توسط تیم فنی persian_ai</footer>
 
     <script>
         const feed = document.getElementById('chatFeed');
-        if (feed) feed.scrollTop = feed.scrollHeight;
+        const input = document.getElementById('chatInput');
+        const sendBtn = document.getElementById('sendBtn');
+        const logo = document.getElementById('brandLogo');
+        const coinBadge = document.getElementById('coinBadge');
+        const errorBox = document.getElementById('errorBox');
+        let msgCounter = 0;
+        let claimed = false;
 
-        function setTheme(t) {
-            document.body.classList.remove('theme-dark', 'theme-light', 'theme-colorful');
-            document.body.classList.add('theme-' + t);
-            localStorage.setItem('micro_theme', t);
-        }
-        (function() { var t = localStorage.getItem('micro_theme'); if (t) setTheme(t); })();
-
-        function sendPrompt(text) {
-            document.getElementById('chatInput').value = text;
-            sendStreamPrompt();
-        }
-
-        async function saveName() {
-            const name = document.getElementById('nameInput').value.trim();
-            if (!name) return;
-            await fetch('/set_name', {
-                method: 'POST', headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({name: name})
-            });
-            document.getElementById('onboardingModal').style.display = 'none';
-        }
-
-        function createBubble(text, sender, id="") {
+        function addUserBubble(text) {
             const row = document.createElement('div');
-            row.className = `chat-row ${sender}`;
-            row.id = id;
-            row.innerHTML = `<div class="chat-bubble">${text}</div>`;
+            row.className = 'chat-row user';
+            row.innerHTML = '<div class="chat-bubble"></div>';
+            row.querySelector('.chat-bubble').innerText = text;
             feed.appendChild(row);
             feed.scrollTop = feed.scrollHeight;
-            return row;
         }
 
-        async function sendStreamPrompt() {
-            const input = document.getElementById('chatInput');
-            const text = input.value.trim();
-            if (!text) return;
-            
-            input.value = '';
-            const grid = document.getElementById('cardsGrid');
-            if(grid) grid.style.display = 'none'; 
+        function addAssistantBubble(id) {
+            const row = document.createElement('div');
+            row.className = 'chat-row assistant';
+            row.innerHTML = `
+                <div class="assistant-wrap">
+                    <div class="chat-bubble" id="bubble-${id}"></div>
+                    <div class="msg-actions" id="actions-${id}" style="display:none;">
+                        <button onclick="giveFeedback(${id}, 'like')" id="like-${id}">👍</button>
+                        <button onclick="giveFeedback(${id}, 'dislike')" id="dislike-${id}">👎</button>
+                        <button onclick="copyMsg(${id})">📋 کپی</button>
+                    </div>
+                </div>`;
+            feed.appendChild(row);
+            feed.scrollTop = feed.scrollHeight;
+        }
 
-            createBubble(text, 'user');
-            
-            const botRowId = 'bot-' + Date.now();
-            const botRow = createBubble('<div class="spinner"></div>', 'assistant', botRowId);
-            const botBubble = botRow.querySelector('.chat-bubble');
-
-            let currentAnswer = "";
-
-            try {
-                const response = await fetch('/chat_stream', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({question: text})
-                });
-
-                if (response.status === 402) throw new Error("سکه کافی نیست");
-                if (!response.ok) throw new Error("NetworkError");
-
-                const reader = response.body.getReader();
-                const decoder = new TextDecoder("utf-8");
-                let isFirstChunk = true;
-
-                while (true) {
-                    const {done, value} = await reader.read();
-                    if (done) break;
-                    
-                    const chunk = decoder.decode(value, {stream: true});
-                    currentAnswer += chunk;
-                    
-                    if (isFirstChunk) {
-                        botBubble.innerHTML = ""; 
-                        isFirstChunk = false;
-                    }
-                    botBubble.innerHTML = currentAnswer.replace(/\\n/g, '<br>');
+        function typeWriter(id, fullText, done) {
+            const el = document.getElementById('bubble-' + id);
+            let i = 0;
+            const speed = 12;
+            function step() {
+                if (i <= fullText.length) {
+                    el.innerText = fullText.slice(0, i);
                     feed.scrollTop = feed.scrollHeight;
-                }
-
-                const btns = document.createElement('div');
-                btns.className = "action-btns";
-                btns.innerHTML = `
-                    <button class="like" onclick="sendFeedback(this, '${encodeURIComponent(text)}', '${encodeURIComponent(currentAnswer)}', 'like')">👍</button>
-                    <button class="dislike" onclick="sendFeedback(this, '${encodeURIComponent(text)}', '${encodeURIComponent(currentAnswer)}', 'dislike')">👎</button>
-                    <button onclick="copyText('${encodeURIComponent(currentAnswer)}')">📋 کپی</button>
-                `;
-                botRow.appendChild(btns);
-
-                const coinRes = await fetch('/get_coins');
-                const coinData = await coinRes.json();
-                document.getElementById('coinDisplay').innerText = `🪙 ${coinData.coins} سکه`;
-
-            } catch (err) {
-                if(err.message === "NetworkError" || err.name === "TypeError") {
-                    botBubble.innerHTML = "مشکلی در ارتباط با سرور پیش آمد!<br>لطفا اینترنت خود را بررسی کنید!";
-                } else if(err.message === "سکه کافی نیست") {
-                    botBubble.innerHTML = "⚠️ سکه شما برای گفتگو کافی نیست! برای افزایش موجودی به ربات بله مراجعه کنید.";
+                    i += 3;
+                    setTimeout(step, speed);
                 } else {
-                    botBubble.innerHTML = err.message;
+                    el.innerText = fullText;
+                    if (done) done();
                 }
             }
+            step();
         }
 
-        async function sendFeedback(btn, q, a, type) {
-            btn.parentElement.innerHTML = `<span style="font-size:11px; color:var(--accent);">ثبت شد ✔️</span>`;
-            await fetch('/feedback', {
+        window.storeAnswers = {};
+
+        function sendMessage() {
+            const text = input.value.trim();
+            if (!text) return;
+            input.value = '';
+            sendBtn.disabled = true;
+            errorBox.innerHTML = '';
+            addUserBubble(text);
+
+            const id = ++msgCounter;
+            addAssistantBubble(id);
+            logo.classList.add('thinking');
+
+            fetch('/api/ask', {
                 method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({ question: decodeURIComponent(q), answer: decodeURIComponent(a), type: type })
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ question: text })
+            })
+            .then(function (res) {
+                if (!res.ok) throw new Error('server');
+                return res.json();
+            })
+            .then(function (data) {
+                logo.classList.remove('thinking');
+                if (data.error) {
+                    document.getElementById('bubble-' + id).innerText = data.error;
+                    sendBtn.disabled = false;
+                    return;
+                }
+                window.storeAnswers[id] = data.answer;
+                if (typeof data.coins === 'number') coinBadge.innerText = data.coins;
+                typeWriter(id, data.answer, function () {
+                    document.getElementById('actions-' + id).style.display = 'flex';
+                    sendBtn.disabled = false;
+                });
+            })
+            .catch(function () {
+                logo.classList.remove('thinking');
+                document.getElementById('bubble-' + id).innerText = '';
+                errorBox.innerHTML = '<div class="error-msg">مشکلی در ارتباط با سرور پیش آمد! لطفا اینترنت خود را بررسی کنید.</div>';
+                sendBtn.disabled = false;
             });
         }
 
-        function copyText(encodedText) {
-            navigator.clipboard.writeText(decodeURIComponent(encodedText));
-            alert("کپی شد!");
+        input.addEventListener('keydown', function (e) {
+            if (e.key === 'Enter') sendMessage();
+        });
+
+        function copyMsg(id) {
+            const text = window.storeAnswers[id] || '';
+            navigator.clipboard.writeText(text);
         }
+
+        function giveFeedback(id, verdict) {
+            const q = document.querySelectorAll('.chat-row.user .chat-bubble');
+            fetch('/api/feedback', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ answer: window.storeAnswers[id] || '', verdict: verdict })
+            });
+            document.getElementById('like-' + id).classList.remove('active-like');
+            document.getElementById('dislike-' + id).classList.remove('active-dislike');
+            document.getElementById(verdict + '-' + id).classList.add('active-' + verdict);
+        }
+
+        // --- تشخیص عضویت در کانال با تایمر حضور (Visibility API) ---
+        let hiddenAt = null;
+        document.addEventListener('visibilitychange', function () {
+            if (document.hidden) {
+                hiddenAt = Date.now();
+            } else if (hiddenAt && !claimed) {
+                const elapsed = (Date.now() - hiddenAt) / 1000;
+                if (elapsed >= {{ dwell_seconds }}) {
+                    claimed = true;
+                    fetch('/api/claim-channel', { method: 'POST' })
+                        .then(function (r) { return r.json(); })
+                        .then(function (data) {
+                            if (data.granted && typeof data.coins === 'number') {
+                                coinBadge.innerText = data.coins;
+                            }
+                        });
+                }
+                hiddenAt = null;
+            }
+        });
     </script>
 </body>
 </html>
@@ -368,132 +335,151 @@ ADMIN_TEMPLATE = """
 <!DOCTYPE html>
 <html dir="rtl" lang="fa">
 <head>
-    <meta charset="UTF-8"><title>پنل مدیریت میکرو</title>
+    <meta charset="UTF-8">
+    <link rel="icon" href="{{ logo }}">
+    <title>پنل مدیریت میکرو</title>
     <style>
-        body { font-family: Tahoma; background: #090c10; color: #fff; padding: 20px; }
-        .card { background: #161b22; padding: 20px; border-radius: 10px; margin-bottom: 20px; border: 1px solid #30363d; }
-        table { width: 100%; border-collapse: collapse; margin-top: 10px; }
-        th, td { border: 1px solid #30363d; padding: 10px; text-align: right; }
-        th { background: #21262d; }
-        .like { color: #22c55e; font-weight: bold; }
-        .dislike { color: #ef4444; font-weight: bold; }
-        a { color: #58a6ff; text-decoration: none; display: inline-block; margin-bottom: 15px; }
+        * { box-sizing: border-box; font-family: Tahoma, sans-serif; }
+        body { background: #0d1117; color: #f0f6fc; margin: 0; padding: 30px; }
+        h1 { color: #22c55e; }
+        .stat { background: #161b22; padding: 16px 22px; border-radius: 14px; display: inline-block; margin-bottom: 20px; }
+        table { width: 100%; border-collapse: collapse; margin-top: 16px; }
+        th, td { text-align: right; padding: 10px; border-bottom: 1px solid rgba(255,255,255,0.1); font-size: 13px; vertical-align: top; }
+        th { color: #8b949e; }
+        .like { color: #22c55e; }
+        .dislike { color: #ef4444; }
+        a { color: #58a6ff; }
     </style>
 </head>
 <body>
-    <a href="/">🔙 بازگشت به میکرو</a>
-    <h1>👑 پنل اختصاصی مدیریت PERSIAN_AI</h1>
-    <div class="card">
-        <h3>📊 آمار کلی</h3>
-        <p>تعداد کل کاربران ثبت‌نامی: <b style="color:#22c55e; font-size:20px;">{{ stats.total_users }}</b> نفر</p>
-    </div>
-    <div class="card">
-        <h3>💬 بازخوردهای اخیر کاربران</h3>
-        <table>
-            <tr><th>کاربر UID</th><th>سوال کاربر</th><th>بازخورد</th></tr>
-            {% for f in stats.feedbacks %}
-            <tr>
-                <td style="font-size:12px; color:#8b949e;">{{ f.uid }}</td>
-                <td>{{ f.q }}</td>
-                <td class="{{ f.type }}">{% if f.type == 'like' %}لایک 👍{% else %}دیس‌لایک 👎{% endif %}</td>
-            </tr>
-            {% endfor %}
-        </table>
-    </div>
+    <a href="/">⬅ بازگشت به چت</a>
+    <h1>📊 پنل مدیریت میکرو</h1>
+    <div class="stat">👥 مجموع کاربران ثبت‌شده: <b>{{ total_users }}</b></div>
+    <h3>بازخوردهای اخیر</h3>
+    <table>
+        <tr><th>کاربر</th><th>جواب میکرو</th><th>بازخورد</th><th>زمان</th></tr>
+        {% for f in feedback %}
+        <tr>
+            <td>{{ f.username }}</td>
+            <td>{{ f.answer[:150] }}</td>
+            <td class="{{ f.verdict }}">{{ '👍 لایک' if f.verdict == 'like' else '👎 دیس‌لایک' }}</td>
+            <td>{{ f.created_at }}</td>
+        </tr>
+        {% endfor %}
+    </table>
 </body>
 </html>
 """
 
-@app.route("/")
-def index():
-    user_id = request.args.get("uid") or session.get("uid", secrets.token_hex(6))
-    session["uid"] = user_id
-    user_data = get_or_create_user(user_id)
-    
-    show_onboarding = (user_data["username"] == "کاربر")
-    is_admin = (user_id == "admin_persian_ai")
 
-    # گرفتن تاریخچه از متغیر رم به جای session
-    history = USER_CHAT_HISTORY.get(user_id, [])
+def get_user_id():
+    if "uid" not in session:
+        session["uid"] = secrets.token_hex(6)
+    session.permanent = True
+    return session["uid"]
+
+
+def is_admin() -> bool:
+    return session.get("is_admin", False)
+
+
+@app.route("/", methods=["GET"])
+def index():
+    if "user_name" not in session:
+        return render_template_string(WELCOME_TEMPLATE, site_name=SITE_NAME, logo=LOGO_URL)
+
+    user_id = get_user_id()
+    get_or_create_user(user_id, session.get("user_name", "کاربر"))
 
     return render_template_string(
         PAGE_TEMPLATE,
         site_name=SITE_NAME,
-        greeting=get_daily_micro_greeting(user_data["username"] if not show_onboarding else ""),
-        coins=user_data["coins"],
-        bonus_available=not user_data["has_channel_bonus"],
-        history=history,
-        show_onboarding=show_onboarding,
-        is_admin=is_admin
+        logo=LOGO_URL,
+        coins=get_user_coins(user_id),
+        admin=is_admin(),
+        channel_link=CHANNEL_LINK,
+        dwell_seconds=CHANNEL_DWELL_SECONDS,
     )
 
-@app.route("/chat_stream", methods=["POST"])
-def chat_stream():
-    user_id = session.get("uid")
-    data = request.json
-    question = data.get("question", "")
-    
-    user_data = get_or_create_user(user_id)
-    
-    if user_id != "admin_persian_ai" and user_data["coins"] < 5:
-        return Response("سکه کافی نیست", status=402)
 
-    # گرفتن تاریخچه خارج از استریم که باگ نده! 🔥
-    if user_id not in USER_CHAT_HISTORY:
-        USER_CHAT_HISTORY[user_id] = []
-    current_history = USER_CHAT_HISTORY[user_id]
+@app.route("/start", methods=["POST"])
+def start():
+    session.permanent = True
+    name = request.form.get("user_name", "").strip()
+    if name:
+        if ADMIN_SECRET and name == ADMIN_SECRET:
+            session["is_admin"] = True
+            session["user_name"] = "سازنده"
+        else:
+            session["user_name"] = name
+    return redirect(url_for("index"))
 
-    def generate():
-        success = False
-        full_answer = ""
-        
-        for chunk in answer_question_stream(question, user_data["username"], current_history):
-            success = True 
-            full_answer += chunk
-            yield chunk
 
-        if success:
-            deduct_user_coins(user_id, 5)
-            # ذخیره پیام جدید تو تاریخچه رم سرور
-            current_history.append({"q": question, "a": full_answer})
-            USER_CHAT_HISTORY[user_id] = current_history[-10:]
+@app.route("/api/ask", methods=["POST"])
+def api_ask():
+    if "user_name" not in session:
+        return jsonify({"error": "لطفاً اول اسمت رو وارد کن."}), 400
 
-    return Response(generate(), mimetype="text/plain")
+    data = request.get_json(silent=True) or {}
+    question = (data.get("question") or "").strip()
+    if not question:
+        return jsonify({"error": "پیام خالیه!"}), 400
 
-@app.route("/set_name", methods=["POST"])
-def set_name_route():
-    user_id = session.get("uid")
-    name = request.json.get("name")
-    if user_id and name:
-        set_user_name(user_id, name)
-    return jsonify({"status": "ok"})
+    user_id = get_user_id()
+    user_name = session.get("user_name", "کاربر")
+    coins = get_user_coins(user_id)
 
-@app.route("/feedback", methods=["POST"])
-def feedback():
-    user_id = session.get("uid")
-    data = request.json
-    save_feedback(user_id, data.get("question"), data.get("answer"), data.get("type"))
-    return jsonify({"status": "saved"})
+    if not is_admin() and coins < COST_PER_MESSAGE:
+        return jsonify({
+            "error": f"⚠️ سکه شما کافی نیست! برای افزایش موجودی از دکمه‌ی «افزایش اعتبار» تو ربات بله استفاده کن.",
+        })
 
-@app.route("/get_coins", methods=["GET"])
-def get_coins_route():
-    user_id = session.get("uid")
-    return jsonify({"coins": get_user_coins(user_id)})
+    history = session.get("history", [])
+    answer, success = answer_question(question, user_name, history)
 
-@app.route("/admin")
-def admin_dashboard():
-    user_id = session.get("uid")
-    if user_id != "admin_persian_ai":
-        return "⚠️ شما دسترسی به این بخش ندارید!", 403
-    stats = get_admin_stats()
-    return render_template_string(ADMIN_TEMPLATE, stats=stats)
+    if success and not is_admin():
+        deduct_user_coins(user_id, COST_PER_MESSAGE)
 
-@app.route("/join_channel")
-def join_channel():
-    uid = session.get("uid")
-    if uid:
-        claim_channel_bonus(uid)
-    return redirect("https://ble.ir/persian_ai")
+    history.append({"q": question, "a": answer})
+    session["history"] = history[-10:]
+    session["last_answer"] = answer
+
+    return jsonify({"answer": answer, "coins": get_user_coins(user_id)})
+
+
+@app.route("/api/feedback", methods=["POST"])
+def api_feedback():
+    if "user_name" not in session:
+        return jsonify({"ok": False}), 400
+    data = request.get_json(silent=True) or {}
+    verdict = data.get("verdict")
+    answer = data.get("answer", "")
+    if verdict not in ("like", "dislike"):
+        return jsonify({"ok": False}), 400
+    save_feedback(get_user_id(), session.get("user_name", "کاربر"), "", answer, verdict)
+    return jsonify({"ok": True})
+
+
+@app.route("/api/claim-channel", methods=["POST"])
+def api_claim_channel():
+    if "user_name" not in session:
+        return jsonify({"granted": False}), 400
+    user_id = get_user_id()
+    granted = claim_channel_bonus(user_id)
+    return jsonify({"granted": granted, "coins": get_user_coins(user_id)})
+
+
+@app.route("/admin", methods=["GET"])
+def admin_panel():
+    if not is_admin():
+        return redirect(url_for("index"))
+    return render_template_string(
+        ADMIN_TEMPLATE,
+        logo=LOGO_URL,
+        total_users=get_total_users(),
+        feedback=get_all_feedback(),
+    )
+
 
 if __name__ == "__main__":
     app.run(debug=False, host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))

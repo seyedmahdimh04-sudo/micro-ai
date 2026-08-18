@@ -33,14 +33,14 @@ def init_db():
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
-    # جدول جدید برای لایک/دیس‌لایک
     c.execute('''
-        CREATE TABLE IF NOT EXISTS feedbacks (
+        CREATE TABLE IF NOT EXISTS feedback (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id TEXT,
+            username TEXT,
             question TEXT,
             answer TEXT,
-            feedback_type TEXT,
+            verdict TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
@@ -49,30 +49,53 @@ def init_db():
 
 init_db()
 
+def get_total_users() -> int:
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    c.execute("SELECT COUNT(*) FROM users")
+    total = c.fetchone()[0]
+    conn.close()
+    return total
+
+def save_feedback(user_id: str, username: str, question: str, answer: str, verdict: str):
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    c.execute(
+        "INSERT INTO feedback (user_id, username, question, answer, verdict) VALUES (?, ?, ?, ?, ?)",
+        (str(user_id), username, question, answer, verdict)
+    )
+    conn.commit()
+    conn.close()
+
+def get_all_feedback(limit: int = 200):
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    c.execute(
+        "SELECT username, question, answer, verdict, created_at FROM feedback ORDER BY id DESC LIMIT ?",
+        (limit,)
+    )
+    rows = c.fetchall()
+    conn.close()
+    return [
+        {"username": r[0], "question": r[1], "answer": r[2], "verdict": r[3], "created_at": r[4]}
+        for r in rows
+    ]
+
 def get_or_create_user(user_id: str, username: str = "کاربر"):
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
-    c.execute("SELECT user_id, username, coins, has_channel_bonus FROM users WHERE user_id = ?", (str(user_id),))
+    c.execute("SELECT user_id, coins, has_channel_bonus FROM users WHERE user_id = ?", (str(user_id),))
     row = c.fetchone()
     if not row:
         c.execute("INSERT INTO users (user_id, username, coins) VALUES (?, ?, 20)", (str(user_id), username))
         conn.commit()
-        db_username = username
         coins = 20
         bonus = 0
     else:
-        db_username = row[1]
-        coins = row[2]
-        bonus = row[3]
+        coins = row[1]
+        bonus = row[2]
     conn.close()
-    return {"user_id": str(user_id), "username": db_username, "coins": coins, "has_channel_bonus": bool(bonus)}
-
-def set_user_name(user_id: str, username: str):
-    conn = sqlite3.connect(DB_NAME)
-    c = conn.cursor()
-    c.execute("UPDATE users SET username = ? WHERE user_id = ?", (username, str(user_id)))
-    conn.commit()
-    conn.close()
+    return {"user_id": str(user_id), "coins": coins, "has_channel_bonus": bool(bonus)}
 
 def get_user_coins(user_id: str) -> int:
     conn = sqlite3.connect(DB_NAME)
@@ -90,10 +113,6 @@ def add_user_coins(user_id: str, amount: int):
     conn.close()
 
 def deduct_user_coins(user_id: str, amount: int) -> bool:
-    # ادمین (شما) سکه نامحدود داره و ازش کسر نمیشه
-    if str(user_id) == "admin_persian_ai":
-        return True
-        
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
     c.execute("SELECT coins FROM users WHERE user_id = ?", (str(user_id),))
@@ -112,7 +131,7 @@ def claim_channel_bonus(user_id: str) -> bool:
     c.execute("SELECT has_channel_bonus FROM users WHERE user_id = ?", (str(user_id),))
     row = c.fetchone()
     if row and row[0] == 0:
-        c.execute("UPDATE users SET coins = coins + 30, has_channel_bonus = 1 WHERE user_id = ?", (str(user_id),))
+        c.execute("UPDATE users SET coins = coins + 25, has_channel_bonus = 1 WHERE user_id = ?", (str(user_id),))
         conn.commit()
         conn.close()
         return True
@@ -133,34 +152,12 @@ def get_daily_micro_greeting(user_name: str = "کاربر") -> str:
     }
     return greetings.get(weekday, f"امروز چه چیزی خلق کنیم {name}؟")
 
-def save_feedback(user_id: str, question: str, answer: str, feedback_type: str):
-    conn = sqlite3.connect(DB_NAME)
-    c = conn.cursor()
-    c.execute("INSERT INTO feedbacks (user_id, question, answer, feedback_type) VALUES (?, ?, ?, ?)",
-              (str(user_id), question, answer, feedback_type))
-    conn.commit()
-    conn.close()
-
-def get_admin_stats():
-    conn = sqlite3.connect(DB_NAME)
-    c = conn.cursor()
-    c.execute("SELECT COUNT(*) FROM users")
-    total_users = c.fetchone()[0]
-    c.execute("SELECT user_id, question, feedback_type, created_at FROM feedbacks ORDER BY created_at DESC LIMIT 50")
-    recent_feedbacks = [{"uid": r[0], "q": r[1], "type": r[2], "date": r[3]} for r in c.fetchall()]
-    conn.close()
-    return {"total_users": total_users, "feedbacks": recent_feedbacks}
-
-# سیستم قدیمی برای بات بله باقی می‌مونه
 def answer_question(question: str, user_name: str = None, history: list = None):
-    # (کد اصلی خودت دست نخورده باقی موند، فقط اینجا طولانی می‌شد پاکش نکردم)
-    pass 
-
-# تابع جدید برای استریم در سایت
-def answer_question_stream(question: str, user_name: str = None, history: list = None):
+    """
+    خروجی: (متن_پاسخ, وضعیت_موفقیت_بولین)
+    """
     if not GEMINI_API_KEY or not client:
-        yield "⚠️ کلید GEMINI_API_KEY تنظیم نشده یا اتصال برقرار نیست."
-        return
+        return "⚠️ کلید GEMINI_API_KEY تنظیم نشده یا اتصال برقرار نیست.", False
 
     try:
         contents = []
@@ -176,14 +173,13 @@ def answer_question_stream(question: str, user_name: str = None, history: list =
 نام کاربر: {user_name or 'دوست من'}.
 پاسخ‌ها را کامل، ساختاریافته و با لحنی گرم و دوستانه به زبان فارسی ارائه بده.
 """
-        # همون مدلی که گفتی دست نزنم و سیستم fallback خودت
+        # اگه یه مدل به هر دلیلی در دسترس نبود (منسوخ شد و غیره)، خودکار مدل بعدی رو امتحان کن
         candidate_models = ["gemini-flash-latest", "gemini-2.5-flash-lite", "gemini-flash-lite-latest"]
         last_error = None
-        response_stream = None
-        
+        response = None
         for model_name in candidate_models:
             try:
-                response_stream = client.models.generate_content_stream(
+                response = client.models.generate_content(
                     model=model_name,
                     contents=contents,
                     config=types.GenerateContentConfig(
@@ -196,15 +192,11 @@ def answer_question_stream(question: str, user_name: str = None, history: list =
                 last_error = inner_e
                 continue
 
-        if response_stream is None:
+        if response is None:
             raise last_error if last_error else RuntimeError("هیچ مدلی در دسترس نبود")
-            
-        for chunk in response_stream:
-            yield chunk.text
-
+        return response.text, True
     except Exception as e:
         err_msg = str(e)
         if "403" in err_msg or "location" in err_msg.lower() or "blocked" in err_msg.lower():
-            yield "⚠️ خطای دسترسی جغرافیایی به سرور جمینای. روی هاست سرور خارجی (مثل رندر) بدون مشکل اجرا می‌شود."
-        else:
-            yield f"⚠️ خطای موقت در دریافت پاسخ: {err_msg}"
+            return "⚠️ خطای دسترسی جغرافیایی به سرور جمینای. روی هاست سرور خارجی (مثل رندر) بدون مشکل اجرا می‌شود.", False
+        return f"⚠️ خطای موقت در دریافت پاسخ: {err_msg}", False
