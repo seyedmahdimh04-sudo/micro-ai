@@ -1,5 +1,6 @@
 """
-وب‌سایت هوش مصنوعی «میکرو» - نسخه کامل با سایدبار تاریخچه چت، آپلود تصویر،
+وب‌سایت هوش مصنوعی «میکرو» - نسخه v1.1.0
+تاریخچه چند-گفتگویی، گفتگوی موقت، شخصی‌سازی، آپلود تصویر، آیکون‌های شیشه‌ای،
 چت زنده (AJAX)، لوگو، بازخورد، تم‌های رنگی و پنل مدیریت
 اجرا: python app.py
 """
@@ -10,19 +11,18 @@ from datetime import timedelta
 from flask import Flask, request, render_template_string, session, redirect, url_for, jsonify
 from main import (
     answer_question, get_daily_micro_greeting, get_or_create_user,
-    get_user_coins, deduct_user_coins, claim_channel_bonus,
+    get_user_coins, deduct_user_coins,
     get_total_users, save_feedback, get_all_feedback,
     create_conversation, list_conversations, get_turns, add_turn,
-    conversation_belongs_to
+    conversation_belongs_to, get_profile, save_profile
 )
 
 app = Flask(__name__)
 
 _secret_env = os.getenv("SECRET_KEY")
 if not _secret_env:
-    print("⚠️ هشدار: متغیر محیطی SECRET_KEY تنظیم نشده! هر بار که سرور ری‌استارت بشه، "
-          "همه‌ی کاربرها از سیستم خارج می‌شن و session‌شون پاک می‌شه. "
-          "حتماً یه مقدار ثابت براش تو تنظیمات Render ست کن.")
+    print("⚠️ هشدار: متغیر محیطی SECRET_KEY تنظیم نشده! هر بار سرور ری‌استارت بشه، "
+          "همه‌ی کاربرها از سیستم خارج می‌شن. حتماً یه مقدار ثابت براش تو Render ست کن.")
 app.secret_key = _secret_env or secrets.token_hex(16)
 app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(days=30)
 
@@ -30,8 +30,8 @@ SITE_NAME = "هوش مصنوعی میکرو"
 LOGO_URL = "https://uploadkon.ir/uploads/805818_26ChatGPT-Image-Aug-18-2026-01-02-18-PM.png"
 CHANNEL_LINK = "https://ble.ir/micro_ai"
 ADMIN_SECRET = os.getenv("ADMIN_SECRET", "seyedmahdi_amirmz")
-COST_PER_MESSAGE = 1
-CHANNEL_DWELL_SECONDS = 15
+COST_TEXT_MESSAGE = 0   # فعلاً به یک مناسبت، گفتگوی متنی رایگانه
+COST_IMAGE_MESSAGE = 4  # آپلود و تحلیل تصویر
 MAX_IMAGE_MB = 6
 
 
@@ -111,17 +111,17 @@ PAGE_TEMPLATE = """
             color: var(--text); min-height: 100vh; display: flex;
         }
 
-        /* ----- سایدبار تاریخچه چت ----- */
         .sidebar {
             width: 250px; background: var(--card); border-left: 1px solid var(--border);
             display: flex; flex-direction: column; padding: 14px; flex-shrink: 0;
-            transition: margin-right 0.25s ease;
         }
-        .sidebar.collapsed { margin-right: -250px; }
-        .new-chat-btn {
-            background: var(--accent); color: #06210f; border: none; border-radius: 10px;
-            padding: 10px; font-weight: 700; font-size: 13px; cursor: pointer; margin-bottom: 14px;
+        .new-chat-btn, .temp-chat-btn {
+            border: none; border-radius: 10px; padding: 10px; font-weight: 700; font-size: 13px;
+            cursor: pointer; margin-bottom: 10px;
         }
+        .new-chat-btn { background: var(--accent); color: #06210f; }
+        .temp-chat-btn { background: var(--bg1); color: var(--text); border: 1px solid var(--border); }
+        .temp-chat-btn.active { background: #7c3aed; color: #fff; border-color: #7c3aed; }
         .conv-list { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; }
         .conv-item {
             padding: 9px 12px; border-radius: 9px; font-size: 12.5px; cursor: pointer;
@@ -147,11 +147,22 @@ PAGE_TEMPLATE = """
         }
         .header-right { display: flex; align-items: center; gap: 10px; }
         .admin-link { color: var(--muted); font-size: 12px; text-decoration: none; }
+        .icon-btn {
+            background: var(--card); border: 1px solid var(--border); color: var(--text);
+            width: 32px; height: 32px; border-radius: 9px; cursor: pointer; font-size: 15px;
+            display: flex; align-items: center; justify-content: center;
+        }
         .theme-buttons { display: flex; gap: 5px; }
         .theme-btn {
             background: var(--bg1); border: 1px solid var(--border);
             color: var(--text); padding: 4px 8px; border-radius: 8px; font-size: 11px; cursor: pointer;
         }
+
+        .temp-banner {
+            text-align: center; font-size: 12px; padding: 6px; background: rgba(124,58,237,0.15);
+            color: #c4b5fd; display: none;
+        }
+        .temp-banner.show { display: block; }
 
         .join-channel-bar { display: flex; justify-content: center; padding: 8px; }
         .join-channel-btn {
@@ -196,12 +207,18 @@ PAGE_TEMPLATE = """
         }
 
         .assistant-wrap { display: flex; flex-direction: column; gap: 6px; max-width: 82%; }
-        .msg-actions { display: flex; gap: 8px; padding-right: 4px; }
-        .msg-actions button {
-            background: transparent; border: none; color: var(--muted); cursor: pointer; font-size: 13px;
+        .msg-actions { display: flex; gap: 10px; padding-right: 4px; align-items: center; }
+        .glossy-btn {
+            background: linear-gradient(145deg, #2a2f3a, #12151a);
+            border: 1px solid rgba(255,255,255,0.08);
+            box-shadow: 0 3px 6px rgba(0,0,0,0.35), inset 0 1px 0 rgba(255,255,255,0.08);
+            width: 30px; height: 30px; border-radius: 9px; cursor: pointer;
+            display: flex; align-items: center; justify-content: center;
         }
-        .msg-actions button.active-like { color: #22c55e; }
-        .msg-actions button.active-dislike { color: #ef4444; }
+        .glossy-btn svg { width: 15px; height: 15px; }
+        .glossy-btn.like.active-like { background: linear-gradient(145deg, #22c55e, #15803d); }
+        .glossy-btn.dislike.active-dislike { background: linear-gradient(145deg, #ef4444, #b91c1c); }
+        .feedback-toast { font-size: 11.5px; color: var(--accent); }
 
         .image-preview-bar { display: none; padding: 6px 4px; }
         .image-preview-bar.show { display: flex; align-items: center; gap: 8px; }
@@ -212,9 +229,8 @@ PAGE_TEMPLATE = """
             background: var(--card); border: 1px solid var(--border);
             border-radius: 18px; display: flex; align-items: center; padding: 6px 12px; gap: 8px;
         }
-        .attach-btn {
-            background: transparent; border: none; color: var(--muted); font-size: 19px; cursor: pointer; padding: 4px;
-        }
+        .attach-btn.glossy-btn { width: 36px; height: 36px; border-radius: 12px; }
+        .attach-btn.glossy-btn svg { width: 18px; height: 18px; }
         .input-bar input {
             flex: 1; background: transparent; border: none; outline: none;
             color: var(--text); font-size: 15px; padding: 10px 4px;
@@ -235,8 +251,45 @@ PAGE_TEMPLATE = """
         footer a { color: var(--muted); text-decoration: none; }
         footer a:hover { color: var(--accent); }
 
+        /* ---------- مودال شخصی‌سازی ---------- */
+        .modal-overlay {
+            display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.55);
+            z-index: 100; align-items: center; justify-content: center;
+        }
+        .modal-overlay.show { display: flex; }
+        .modal-box {
+            background: var(--card); border: 1px solid var(--border); border-radius: 18px;
+            padding: 26px; width: 90%; max-width: 420px;
+        }
+        .modal-box h2 { font-size: 17px; margin-bottom: 18px; }
+        .field-group { position: relative; margin-bottom: 20px; }
+        .field-group label {
+            position: absolute; right: 14px; top: 13px; color: var(--muted); font-size: 13.5px;
+            pointer-events: none; transition: 0.15s ease; background: var(--card); padding: 0 4px;
+        }
+        .field-group input, .field-group textarea {
+            width: 100%; background: var(--bg1); border: 1px solid var(--border); border-radius: 10px;
+            padding: 13px 12px; color: var(--text); font-size: 14px; font-family: inherit;
+        }
+        .field-group textarea { min-height: 70px; resize: vertical; }
+        .field-group input:focus + label,
+        .field-group input:not(:placeholder-shown) + label,
+        .field-group textarea:focus + label,
+        .field-group textarea:not(:placeholder-shown) + label {
+            top: -9px; font-size: 11px; color: var(--accent);
+        }
+        .privacy-note {
+            font-size: 11.5px; color: var(--muted); line-height: 1.8; margin-top: 4px; margin-bottom: 18px;
+        }
+        .modal-actions { display: flex; gap: 10px; }
+        .modal-actions button {
+            flex: 1; padding: 12px; border-radius: 10px; border: none; font-weight: 700; cursor: pointer; font-size: 13px;
+        }
+        .modal-save { background: var(--accent); color: #06210f; }
+        .modal-cancel { background: var(--bg1); color: var(--text); border: 1px solid var(--border) !important; }
+
         @media (max-width: 760px) {
-            .sidebar { position: fixed; top: 0; bottom: 0; right: 0; z-index: 50; margin-right: -250px; }
+            .sidebar { position: fixed; top: 0; bottom: 0; right: 0; z-index: 50; margin-right: -250px; transition: margin-right 0.25s ease; }
             .sidebar.open { margin-right: 0; }
             .sidebar-toggle { display: inline-block; }
         }
@@ -246,6 +299,7 @@ PAGE_TEMPLATE = """
 
     <div class="sidebar" id="sidebar">
         <button class="new-chat-btn" onclick="newChat()">➕ چت جدید</button>
+        <button class="temp-chat-btn" id="tempChatBtn" onclick="toggleTempChat()">🕶️ گفتگوی موقت</button>
         <div class="conv-list" id="convList"></div>
     </div>
 
@@ -261,6 +315,7 @@ PAGE_TEMPLATE = """
             <div class="header-right">
                 {% if admin %}<a class="admin-link" href="/admin">📊 پنل مدیریت</a>{% endif %}
                 <div class="user-balance">🪙 <span id="coinBadge">{{ coins }}</span> سکه</div>
+                <button class="icon-btn" onclick="openSettings()" title="شخصی‌سازی میکرو">⚙️</button>
                 <div class="theme-buttons">
                     <button class="theme-btn" onclick="setTheme('dark')">🌙</button>
                     <button class="theme-btn" onclick="setTheme('light')">☀️</button>
@@ -269,8 +324,10 @@ PAGE_TEMPLATE = """
             </div>
         </div>
 
+        <div class="temp-banner" id="tempBanner">🕶️ گفتگوی موقت فعاله — این چت ذخیره نمی‌شه و امکان لایک/دیس‌لایک نداره</div>
+
         <div class="join-channel-bar">
-            <a href="{{ channel_link }}" target="_blank" id="channelLink" class="join-channel-btn">📢 عضویت در کانال میکرو (+۲۵ سکه)</a>
+            <a href="{{ channel_link }}" target="_blank" class="join-channel-btn">📢 عضویت در کانال میکرو</a>
         </div>
 
         <div class="main-container">
@@ -298,13 +355,15 @@ PAGE_TEMPLATE = """
 
             <div class="image-preview-bar" id="imagePreviewBar">
                 <img id="imagePreviewThumb" src="">
-                <span style="font-size:12px; color:var(--muted);">تصویر ضمیمه شد</span>
+                <span style="font-size:12px; color:var(--muted);">تصویر ضمیمه شد (۴ سکه)</span>
                 <button onclick="removeImage()">حذف</button>
             </div>
 
             <form id="chatForm" onsubmit="return false;">
                 <div class="input-bar">
-                    <button type="button" class="attach-btn" onclick="document.getElementById('imageInput').click()">📎</button>
+                    <button type="button" class="glossy-btn attach-btn" onclick="document.getElementById('imageInput').click()" title="ضمیمه تصویر">
+                        <svg viewBox="0 0 24 24" fill="none"><path d="M21 12.5V7a4 4 0 0 0-4-4H7a4 4 0 0 0-4 4v10a4 4 0 0 0 4 4h6" stroke="#9ca3af" stroke-width="1.7" stroke-linecap="round"/><circle cx="8.5" cy="8.5" r="1.5" fill="#9ca3af"/><path d="M4 16l4.5-4.5a2 2 0 0 1 2.8 0L15 15" stroke="#9ca3af" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/><circle cx="18" cy="18" r="4" fill="#22c55e"/><path d="M18 16.3v3.4M16.3 18h3.4" stroke="#06210f" stroke-width="1.6" stroke-linecap="round"/></svg>
+                    </button>
                     <input type="file" id="imageInput" accept="image/*" style="display:none;" onchange="onImageSelected(event)">
                     <input type="text" id="chatInput" placeholder="اینجا با من گپ بزن..." autofocus>
                     <button type="submit" class="send-btn" id="sendBtn" onclick="sendMessage()">➤</button>
@@ -318,6 +377,32 @@ PAGE_TEMPLATE = """
         </footer>
     </div>
 
+    <!-- مودال شخصی‌سازی -->
+    <div class="modal-overlay" id="settingsModal">
+        <div class="modal-box">
+            <h2>⚙️ شخصی‌سازی میکرو</h2>
+            <div class="field-group">
+                <input type="text" id="pf_nickname" placeholder=" " value="{{ profile.nickname or user_name }}">
+                <label>دوست دارید میکرو شما را چه صدا بزند؟</label>
+            </div>
+            <div class="field-group">
+                <input type="text" id="pf_occupation" placeholder=" " value="{{ profile.occupation }}">
+                <label>چه شغلی دارید؟</label>
+            </div>
+            <div class="field-group">
+                <textarea id="pf_about" placeholder=" ">{{ profile.about }}</textarea>
+                <label>بیشتر درباره خود بگویید</label>
+            </div>
+            <div class="privacy-note">
+                🔒 اطلاعات شما فقط برای شخصی‌سازی پاسخ‌های میکرو استفاده می‌شه و در اختیار هیچ شخص یا سرویس ثالثی قرار نمی‌گیره.
+            </div>
+            <div class="modal-actions">
+                <button class="modal-cancel" onclick="closeSettings()">انصراف</button>
+                <button class="modal-save" onclick="saveSettings()">ذخیره</button>
+            </div>
+        </div>
+    </div>
+
     <script>
         const feed = document.getElementById('chatFeed');
         const input = document.getElementById('chatInput');
@@ -329,10 +414,16 @@ PAGE_TEMPLATE = """
         const imagePreviewBar = document.getElementById('imagePreviewBar');
         const imagePreviewThumb = document.getElementById('imagePreviewThumb');
         let msgCounter = 0;
-        let claimed = false;
         let currentConvId = null;
         let selectedImageFile = null;
+        let isTempChat = false;
         window.storeAnswers = {};
+
+        const ICONS = {
+            like: '<svg viewBox="0 0 24 24" fill="none"><path d="M7 11v9H4a1 1 0 0 1-1-1v-7a1 1 0 0 1 1-1h3zm0 0l4.5-8a2 2 0 0 1 3.8 1l-.9 5.5H18a2 2 0 0 1 2 2.3l-1.2 7A2 2 0 0 1 16.8 20H10a3 3 0 0 1-3-3" stroke="#9ca3af" stroke-width="1.6" stroke-linejoin="round" fill="url(#gradLike)"/><defs><linearGradient id="gradLike" x1="0" y1="0" x2="24" y2="24"><stop offset="0" stop-color="#34d399"/><stop offset="1" stop-color="#16a34a"/></linearGradient></defs></svg>',
+            dislike: '<svg viewBox="0 0 24 24" fill="none" style="transform:rotate(180deg)"><path d="M7 11v9H4a1 1 0 0 1-1-1v-7a1 1 0 0 1 1-1h3zm0 0l4.5-8a2 2 0 0 1 3.8 1l-.9 5.5H18a2 2 0 0 1 2 2.3l-1.2 7A2 2 0 0 1 16.8 20H10a3 3 0 0 1-3-3" stroke="#9ca3af" stroke-width="1.6" stroke-linejoin="round" fill="url(#gradDislike)"/><defs><linearGradient id="gradDislike" x1="0" y1="0" x2="24" y2="24"><stop offset="0" stop-color="#f87171"/><stop offset="1" stop-color="#dc2626"/></linearGradient></defs></svg>',
+            copy: '<svg viewBox="0 0 24 24" fill="none"><rect x="8" y="8" width="12" height="12" rx="2.5" fill="url(#gradCopy)"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2" stroke="#9ca3af" stroke-width="1.6"/><defs><linearGradient id="gradCopy" x1="0" y1="0" x2="20" y2="20"><stop offset="0" stop-color="#60a5fa"/><stop offset="1" stop-color="#2563eb"/></linearGradient></defs></svg>'
+        };
 
         // ---------- تم ----------
         function setTheme(name) {
@@ -341,14 +432,32 @@ PAGE_TEMPLATE = """
             try { localStorage.setItem('microTheme', name); } catch (e) {}
         }
         (function () {
-            try {
-                var saved = localStorage.getItem('microTheme');
-                if (saved) setTheme(saved);
-            } catch (e) {}
+            try { var saved = localStorage.getItem('microTheme'); if (saved) setTheme(saved); } catch (e) {}
         })();
 
-        function toggleSidebar() {
-            document.getElementById('sidebar').classList.toggle('open');
+        function toggleSidebar() { document.getElementById('sidebar').classList.toggle('open'); }
+
+        // ---------- گفتگوی موقت ----------
+        function toggleTempChat() {
+            isTempChat = !isTempChat;
+            document.getElementById('tempChatBtn').classList.toggle('active', isTempChat);
+            document.getElementById('tempBanner').classList.toggle('show', isTempChat);
+            newChat();
+        }
+
+        // ---------- شخصی‌سازی ----------
+        function openSettings() { document.getElementById('settingsModal').classList.add('show'); }
+        function closeSettings() { document.getElementById('settingsModal').classList.remove('show'); }
+        function saveSettings() {
+            const payload = {
+                nickname: document.getElementById('pf_nickname').value.trim(),
+                occupation: document.getElementById('pf_occupation').value.trim(),
+                about: document.getElementById('pf_about').value.trim()
+            };
+            fetch('/api/profile', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            }).then(function () { closeSettings(); });
         }
 
         // ---------- تصویر ضمیمه ----------
@@ -377,8 +486,7 @@ PAGE_TEMPLATE = """
             bubble.className = 'chat-bubble';
             if (imageDataUrl) {
                 const img = document.createElement('img');
-                img.src = imageDataUrl;
-                img.className = 'attached';
+                img.src = imageDataUrl; img.className = 'attached';
                 bubble.appendChild(img);
             }
             const span = document.createElement('span');
@@ -392,14 +500,18 @@ PAGE_TEMPLATE = """
         function addAssistantBubble(id) {
             const row = document.createElement('div');
             row.className = 'chat-row assistant';
+            let actionsHtml = `<button class="glossy-btn" onclick="copyMsg(${id})" title="کپی">${ICONS.copy}</button>`;
+            if (!isTempChat) {
+                actionsHtml = `
+                    <button class="glossy-btn like" onclick="giveFeedback(${id}, 'like')" id="like-${id}" title="لایک">${ICONS.like}</button>
+                    <button class="glossy-btn dislike" onclick="giveFeedback(${id}, 'dislike')" id="dislike-${id}" title="دیس‌لایک">${ICONS.dislike}</button>
+                    ` + actionsHtml + `
+                    <span class="feedback-toast" id="toast-${id}"></span>`;
+            }
             row.innerHTML = `
                 <div class="assistant-wrap">
                     <div class="chat-bubble" id="bubble-${id}"><div class="typing-dots"><span></span><span></span><span></span></div></div>
-                    <div class="msg-actions" id="actions-${id}" style="display:none;">
-                        <button onclick="giveFeedback(${id}, 'like')" id="like-${id}">👍</button>
-                        <button onclick="giveFeedback(${id}, 'dislike')" id="dislike-${id}">👎</button>
-                        <button onclick="copyMsg(${id})">📋 کپی</button>
-                    </div>
+                    <div class="msg-actions" id="actions-${id}" style="display:none;">${actionsHtml}</div>
                 </div>`;
             feed.appendChild(row);
             feed.scrollTop = feed.scrollHeight;
@@ -407,27 +519,18 @@ PAGE_TEMPLATE = """
 
         function typeWriter(id, fullText, done) {
             const el = document.getElementById('bubble-' + id);
-            let i = 0;
-            const speed = 12;
+            let i = 0; const speed = 12;
             function step() {
                 if (i <= fullText.length) {
                     el.innerText = fullText.slice(0, i);
                     feed.scrollTop = feed.scrollHeight;
-                    i += 3;
-                    setTimeout(step, speed);
-                } else {
-                    el.innerText = fullText;
-                    if (done) done();
-                }
+                    i += 3; setTimeout(step, speed);
+                } else { el.innerText = fullText; if (done) done(); }
             }
             step();
         }
 
-        // ---------- ارسال پیام ----------
-        function sendPrompt(text) {
-            input.value = text;
-            sendMessage();
-        }
+        function sendPrompt(text) { input.value = text; sendMessage(); }
 
         function sendMessage() {
             const text = input.value.trim();
@@ -446,22 +549,19 @@ PAGE_TEMPLATE = """
 
             const formData = new FormData();
             formData.append('question', text);
-            if (currentConvId) formData.append('conversation_id', currentConvId);
+            if (currentConvId && !isTempChat) formData.append('conversation_id', currentConvId);
             if (selectedImageFile) formData.append('image', selectedImageFile);
+            formData.append('temporary', isTempChat ? '1' : '0');
             removeImage();
 
             fetch('/api/ask', { method: 'POST', body: formData })
-            .then(function (res) {
-                if (!res.ok) throw new Error('server');
-                return res.json();
-            })
+            .then(function (res) { if (!res.ok) throw new Error('server'); return res.json(); })
             .then(function (data) {
                 if (data.error) {
                     document.getElementById('bubble-' + id).innerText = data.error;
-                    sendBtn.disabled = false;
-                    return;
+                    sendBtn.disabled = false; return;
                 }
-                if (data.conversation_id && !currentConvId) {
+                if (data.conversation_id && !currentConvId && !isTempChat) {
                     currentConvId = data.conversation_id;
                     loadConversations();
                 }
@@ -479,24 +579,20 @@ PAGE_TEMPLATE = """
             });
         }
 
-        input.addEventListener('keydown', function (e) {
-            if (e.key === 'Enter') sendMessage();
-        });
+        input.addEventListener('keydown', function (e) { if (e.key === 'Enter') sendMessage(); });
 
-        function copyMsg(id) {
-            const text = window.storeAnswers[id] || '';
-            navigator.clipboard.writeText(text);
-        }
+        function copyMsg(id) { navigator.clipboard.writeText(window.storeAnswers[id] || ''); }
 
         function giveFeedback(id, verdict) {
             fetch('/api/feedback', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ answer: window.storeAnswers[id] || '', verdict: verdict })
             });
             document.getElementById('like-' + id).classList.remove('active-like');
             document.getElementById('dislike-' + id).classList.remove('active-dislike');
             document.getElementById(verdict + '-' + id).classList.add('active-' + verdict);
+            const toast = document.getElementById('toast-' + id);
+            if (toast) { toast.innerText = 'از بازخوردتان صمیمانه متشکریم! 🙏'; setTimeout(function () { toast.innerText = ''; }, 4000); }
         }
 
         // ---------- سایدبار تاریخچه چت ----------
@@ -523,6 +619,7 @@ PAGE_TEMPLATE = """
         }
 
         function openConversation(id) {
+            if (isTempChat) toggleTempChat();
             currentConvId = id;
             document.querySelectorAll('.conv-item').forEach(function (el) { el.classList.remove('active'); });
             fetch('/api/conversations/' + id).then(function (r) { return r.json(); }).then(function (data) {
@@ -543,27 +640,6 @@ PAGE_TEMPLATE = """
         }
 
         loadConversations();
-
-        // ---------- تشخیص عضویت در کانال با تایمر حضور (Visibility API) ----------
-        let hiddenAt = null;
-        document.addEventListener('visibilitychange', function () {
-            if (document.hidden) {
-                hiddenAt = Date.now();
-            } else if (hiddenAt && !claimed) {
-                const elapsed = (Date.now() - hiddenAt) / 1000;
-                if (elapsed >= {{ dwell_seconds }}) {
-                    claimed = true;
-                    fetch('/api/claim-channel', { method: 'POST' })
-                        .then(function (r) { return r.json(); })
-                        .then(function (data) {
-                            if (data.granted && typeof data.coins === 'number') {
-                                coinBadge.innerText = data.coins;
-                            }
-                        });
-                }
-                hiddenAt = null;
-            }
-        });
     </script>
 </body>
 </html>
@@ -628,6 +704,7 @@ def index():
 
     user_id = get_user_id()
     get_or_create_user(user_id, session.get("user_name", "کاربر"))
+    profile = get_profile(user_id)
 
     return render_template_string(
         PAGE_TEMPLATE,
@@ -636,8 +713,9 @@ def index():
         coins=get_user_coins(user_id),
         admin=is_admin(),
         channel_link=CHANNEL_LINK,
-        dwell_seconds=CHANNEL_DWELL_SECONDS,
-        greeting=get_daily_micro_greeting(session.get("user_name")),
+        greeting=get_daily_micro_greeting(profile.get("nickname") or session.get("user_name")),
+        profile=profile,
+        user_name=session.get("user_name", ""),
     )
 
 
@@ -654,6 +732,20 @@ def start():
     return redirect(url_for("index"))
 
 
+@app.route("/api/profile", methods=["POST"])
+def api_profile():
+    if "user_name" not in session:
+        return jsonify({"ok": False}), 400
+    data = request.get_json(silent=True) or {}
+    save_profile(
+        get_user_id(),
+        (data.get("nickname") or "").strip(),
+        (data.get("occupation") or "").strip(),
+        (data.get("about") or "").strip(),
+    )
+    return jsonify({"ok": True})
+
+
 @app.route("/api/ask", methods=["POST"])
 def api_ask():
     if "user_name" not in session:
@@ -661,6 +753,7 @@ def api_ask():
 
     question = (request.form.get("question") or "").strip()
     conv_id = request.form.get("conversation_id")
+    is_temp = request.form.get("temporary") == "1"
     image_file = request.files.get("image")
 
     if not question and not image_file:
@@ -668,25 +761,29 @@ def api_ask():
 
     user_id = get_user_id()
     user_name = session.get("user_name", "کاربر")
+    profile = get_profile(user_id)
+    cost = COST_IMAGE_MESSAGE if image_file else COST_TEXT_MESSAGE
     coins = get_user_coins(user_id)
 
-    if not is_admin() and coins < COST_PER_MESSAGE:
+    if not is_admin() and coins < cost:
         return jsonify({
             "error": "⚠️ سکه شما کافی نیست! برای افزایش موجودی از دکمه‌ی «افزایش اعتبار» تو ربات بله استفاده کن.",
         })
 
-    # مدیریت مکالمه: اگه از قبل انتخاب نشده، یه مکالمه‌ی جدید بساز
-    if conv_id:
-        try:
-            conv_id = int(conv_id)
-        except ValueError:
-            conv_id = None
-        if conv_id and not conversation_belongs_to(conv_id, user_id):
-            conv_id = None
-    if not conv_id:
-        conv_id = create_conversation(user_id)
-
-    history = get_turns(conv_id)
+    history = []
+    if not is_temp:
+        if conv_id:
+            try:
+                conv_id = int(conv_id)
+            except ValueError:
+                conv_id = None
+            if conv_id and not conversation_belongs_to(conv_id, user_id):
+                conv_id = None
+        if not conv_id:
+            conv_id = create_conversation(user_id)
+        history = get_turns(conv_id)
+    else:
+        conv_id = None
 
     image_bytes = None
     image_mime = None
@@ -696,12 +793,13 @@ def api_ask():
             return jsonify({"error": f"⚠️ حجم تصویر بیشتر از {MAX_IMAGE_MB} مگابایته."}), 400
         image_mime = image_file.mimetype or "image/jpeg"
 
-    answer, success = answer_question(question, user_name, history, image_bytes, image_mime)
+    answer, success = answer_question(question, user_name, history, image_bytes, image_mime, profile)
 
-    if success and not is_admin():
-        deduct_user_coins(user_id, COST_PER_MESSAGE)
+    if success and not is_admin() and cost > 0:
+        deduct_user_coins(user_id, cost)
 
-    add_turn(conv_id, question or "[تصویر ارسال شد]", answer, had_image=bool(image_file))
+    if not is_temp and conv_id:
+        add_turn(conv_id, question or "[تصویر ارسال شد]", answer, had_image=bool(image_file))
 
     return jsonify({"answer": answer, "coins": get_user_coins(user_id), "conversation_id": conv_id})
 
@@ -734,15 +832,6 @@ def api_feedback():
         return jsonify({"ok": False}), 400
     save_feedback(get_user_id(), session.get("user_name", "کاربر"), "", answer, verdict)
     return jsonify({"ok": True})
-
-
-@app.route("/api/claim-channel", methods=["POST"])
-def api_claim_channel():
-    if "user_name" not in session:
-        return jsonify({"granted": False}), 400
-    user_id = get_user_id()
-    granted = claim_channel_bonus(user_id)
-    return jsonify({"granted": granted, "coins": get_user_coins(user_id)})
 
 
 @app.route("/admin", methods=["GET"])

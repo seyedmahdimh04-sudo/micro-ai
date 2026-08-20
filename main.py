@@ -63,6 +63,14 @@ def init_db():
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS profiles (
+            user_id TEXT PRIMARY KEY,
+            nickname TEXT,
+            occupation TEXT,
+            about TEXT
+        )
+    ''')
     conn.commit()
     conn.close()
 
@@ -170,6 +178,32 @@ def claim_channel_bonus(user_id: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# شخصی‌سازی میکرو (نام دلخواه، شغل، توضیحات)
+# ---------------------------------------------------------------------------
+def get_profile(user_id: str):
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    c.execute("SELECT nickname, occupation, about FROM profiles WHERE user_id = ?", (str(user_id),))
+    row = c.fetchone()
+    conn.close()
+    if not row:
+        return {"nickname": "", "occupation": "", "about": ""}
+    return {"nickname": row[0] or "", "occupation": row[1] or "", "about": row[2] or ""}
+
+
+def save_profile(user_id: str, nickname: str, occupation: str, about: str):
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    c.execute(
+        "INSERT INTO profiles (user_id, nickname, occupation, about) VALUES (?, ?, ?, ?) "
+        "ON CONFLICT(user_id) DO UPDATE SET nickname=excluded.nickname, occupation=excluded.occupation, about=excluded.about",
+        (str(user_id), nickname, occupation, about)
+    )
+    conn.commit()
+    conn.close()
+
+
+# ---------------------------------------------------------------------------
 # تاریخچه‌ی گفتگوها (چند چت جدا برای هر کاربر، مثل ChatGPT/Gemini)
 # ---------------------------------------------------------------------------
 def create_conversation(user_id: str, title: str = "گفتگوی جدید") -> int:
@@ -252,11 +286,12 @@ def get_daily_micro_greeting(user_name: str = "کاربر") -> str:
 
 
 def answer_question(question: str, user_name: str = None, history: list = None,
-                     image_bytes: bytes = None, image_mime: str = None):
+                     image_bytes: bytes = None, image_mime: str = None, profile: dict = None):
     """
     خروجی: (متن_پاسخ, وضعیت_موفقیت_بولین)
     history: لیستی از {"q":..., "a":...} برای حفظ تداوم گفتگو
     image_bytes/image_mime: در صورت آپلود تصویر توسط کاربر (تحلیل تصویر با جمینای)
+    profile: {"nickname":..., "occupation":..., "about":...} برای شخصی‌سازی پاسخ‌ها
     """
     if not GEMINI_API_KEY or not client:
         return "⚠️ کلید GEMINI_API_KEY تنظیم نشده یا اتصال برقرار نیست.", False
@@ -287,10 +322,20 @@ def answer_question(question: str, user_name: str = None, history: list = None,
             "(نگو «سلام»، «حالت چطوره» و مشابه آن)، مستقیم و بدون مقدمه برو سراغ جواب دادن."
         )
 
+        display_name = (profile.get("nickname") if profile and profile.get("nickname") else user_name) or "دوست من"
+        personalization = ""
+        if profile and (profile.get("occupation") or profile.get("about")):
+            personalization = "\nاطلاعات بیشتر درباره‌ی کاربر (در صورت مرتبط بودن، به‌آرامی و طبیعی در پاسخ‌هایت لحاظ کن، ولی هر بار تکرارشان نکن):\n"
+            if profile.get("occupation"):
+                personalization += f"- شغل کاربر: {profile['occupation']}\n"
+            if profile.get("about"):
+                personalization += f"- درباره‌ی کاربر: {profile['about']}\n"
+
         system_instruction = f"""
 تو «میکرو» هستی؛ یک دستیار هوش مصنوعی فارسی، پیشرفته و دقیق متعلق به persian_ai.
-نام کاربر: {user_name or 'دوست من'}.
+نام کاربر: {display_name}.
 {greeting_rule}
+{personalization}
 اگر کاربر تصویری فرستاده، آن را با دقت تحلیل کن و درباره‌اش توضیح بده یا به سؤالش پاسخ بده.
 پاسخ‌ها را کامل، ساختاریافته و با لحنی گرم و دوستانه به زبان فارسی ارائه بده.
 """
