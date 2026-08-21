@@ -3,11 +3,18 @@
 """
 
 import os
+import io
 import sqlite3
 import datetime
 from dotenv import load_dotenv
 from google import genai
 from google.genai import types
+
+try:
+    from PIL import Image
+    PIL_AVAILABLE = True
+except ImportError:
+    PIL_AVAILABLE = False
 
 load_dotenv(encoding="utf-8-sig")
 
@@ -270,6 +277,27 @@ def add_turn(conversation_id: int, question: str, answer: str, had_image: bool =
 # ---------------------------------------------------------------------------
 # شخصیت میکرو و ارتباط با جمینای
 # ---------------------------------------------------------------------------
+def _normalize_image(image_bytes: bytes):
+    """
+    هر تصویری (هر فرمت، هر حالت رنگی) رو به یه JPEG استاندارد تبدیل می‌کنه
+    تا مشکلات فرمت‌های عجیب (HEIC موبایل، PNG شفاف و غیره) با جمینای رو حل کنه.
+    """
+    if not PIL_AVAILABLE:
+        return image_bytes, "image/jpeg"
+    try:
+        img = Image.open(io.BytesIO(image_bytes))
+        if img.mode != "RGB":
+            img = img.convert("RGB")
+        # کوچک کردن تصاویر خیلی بزرگ برای سرعت بیشتر و کاهش خطا
+        img.thumbnail((1600, 1600))
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=88)
+        return buf.getvalue(), "image/jpeg"
+    except Exception as e:
+        print(f"Image normalize warning: {e}")
+        return image_bytes, "image/jpeg"
+
+
 def get_daily_micro_greeting(user_name: str = "کاربر") -> str:
     weekday = datetime.date.today().weekday()
     name = user_name if user_name else "دوست من"
@@ -307,9 +335,10 @@ def answer_question(question: str, user_name: str = None, history: list = None,
         user_parts = []
         if image_bytes:
             try:
-                user_parts.append(types.Part.from_bytes(data=image_bytes, mime_type=image_mime or "image/jpeg"))
-            except Exception:
-                pass
+                norm_bytes, norm_mime = _normalize_image(image_bytes)
+                user_parts.append(types.Part.from_bytes(data=norm_bytes, mime_type=norm_mime))
+            except Exception as img_err:
+                print(f"Image part error: {img_err}")
         user_parts.append(types.Part.from_text(text=question or "این تصویر رو برام توضیح بده"))
         contents.append(types.Content(role="user", parts=user_parts))
 
@@ -333,13 +362,19 @@ def answer_question(question: str, user_name: str = None, history: list = None,
 
         system_instruction = f"""
 تو «میکرو» هستی؛ یک دستیار هوش مصنوعی فارسی، پیشرفته و دقیق متعلق به persian_ai.
-نام کاربر: {display_name}.
+نام کاربر دقیقاً «{display_name}» است. همیشه و در همه‌ی حالت‌ها (حتی در گفتگوی موقت) از همین نام دقیق استفاده کن؛
+هرگز به‌جای اسم واقعی از کلماتی مثل «غریبه»، «دوست من»، «کاربر عزیز» یا هر لقب عمومی دیگر استفاده نکن، مگر اینکه نام واقعاً نامشخص باشد.
 {greeting_rule}
 {personalization}
-اگر کاربر تصویری فرستاده، آن را با دقت تحلیل کن و درباره‌اش توضیح بده یا به سؤالش پاسخ بده.
+اگر کاربر تصویری فرستاده، آن را با دقت کامل تحلیل کن و درباره‌اش توضیح بده یا به سؤالش پاسخ بده.
 پاسخ‌ها را کامل، ساختاریافته و با لحنی گرم و دوستانه به زبان فارسی ارائه بده.
 """
-        candidate_models = ["gemini-flash-latest", "gemini-2.5-flash-lite", "gemini-flash-lite-latest"]
+        # برای پیام‌های همراه با تصویر، فقط از مدل‌های کامل (نه نسخه‌ی سبک/Lite) استفاده کن
+        # چون مدل‌های Lite پشتیبانی ضعیف‌تری از تحلیل تصویر دارند
+        if image_bytes:
+            candidate_models = ["gemini-flash-latest", "gemini-2.5-flash"]
+        else:
+            candidate_models = ["gemini-flash-latest", "gemini-2.5-flash-lite", "gemini-flash-lite-latest"]
         last_error = None
         response = None
         for model_name in candidate_models:
@@ -364,4 +399,6 @@ def answer_question(question: str, user_name: str = None, history: list = None,
         err_msg = str(e)
         if "403" in err_msg or "location" in err_msg.lower() or "blocked" in err_msg.lower():
             return "⚠️ خطای دسترسی جغرافیایی به سرور جمینای. روی هاست سرور خارجی (مثل رندر) بدون مشکل اجرا می‌شود.", False
+        if image_bytes:
+            return "⚠️ متأسفانه تحلیل این تصویر با خطا مواجه شد. لطفاً یه تصویر دیگه امتحان کن یا فقط با متن بپرس.", False
         return f"⚠️ خطای موقت در دریافت پاسخ: {err_msg}", False

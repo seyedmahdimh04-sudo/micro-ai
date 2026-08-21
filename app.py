@@ -30,6 +30,13 @@ SITE_NAME = "هوش مصنوعی میکرو"
 LOGO_URL = "https://uploadkon.ir/uploads/805818_26ChatGPT-Image-Aug-18-2026-01-02-18-PM.png"
 CHANNEL_LINK = "https://ble.ir/micro_ai"
 ADMIN_SECRET = os.getenv("ADMIN_SECRET", "seyedmahdi_amirmz")
+SUPPORT_LINK = "https://ble.ir/admin_persian_Ai"
+COIN_PACKAGES = [
+    {"coins": 20, "price": "۱۵ هزار تومان", "period": "هفتگی"},
+    {"coins": 50, "price": "۴۵ هزار تومان", "period": "هفتگی"},
+    {"coins": 70, "price": "۵۵ هزار تومان", "period": "ماهیانه"},
+    {"coins": 100, "price": "۹۹ هزار تومان", "period": "ماهیانه"},
+]
 COST_TEXT_MESSAGE = 0   # فعلاً به یک مناسبت، گفتگوی متنی رایگانه
 COST_IMAGE_MESSAGE = 4  # آپلود و تحلیل تصویر
 MAX_IMAGE_MB = 6
@@ -148,15 +155,38 @@ PAGE_TEMPLATE = """
         .header-right { display: flex; align-items: center; gap: 10px; }
         .admin-link { color: var(--muted); font-size: 12px; text-decoration: none; }
         .icon-btn {
-            background: var(--card); border: 1px solid var(--border); color: var(--text);
-            width: 32px; height: 32px; border-radius: 9px; cursor: pointer; font-size: 15px;
-            display: flex; align-items: center; justify-content: center;
+            background: linear-gradient(145deg, #2a2f3a, #12151a);
+            border: 1px solid rgba(255,255,255,0.08);
+            box-shadow: 0 3px 6px rgba(0,0,0,0.35), inset 0 1px 0 rgba(255,255,255,0.08);
+            color: var(--text); width: 32px; height: 32px; border-radius: 10px; cursor: pointer;
+            display: flex; align-items: center; justify-content: center; position: relative;
         }
         .theme-buttons { display: flex; gap: 5px; }
         .theme-btn {
-            background: var(--bg1); border: 1px solid var(--border);
-            color: var(--text); padding: 4px 8px; border-radius: 8px; font-size: 11px; cursor: pointer;
+            background: linear-gradient(145deg, #2a2f3a, #12151a);
+            border: 1px solid rgba(255,255,255,0.08);
+            box-shadow: 0 3px 6px rgba(0,0,0,0.35), inset 0 1px 0 rgba(255,255,255,0.08);
+            width: 30px; height: 30px; border-radius: 9px; cursor: pointer;
+            display: flex; align-items: center; justify-content: center;
         }
+        .theme-btn svg, .icon-btn svg { width: 16px; height: 16px; }
+        .coin-add-btn {
+            background: linear-gradient(145deg, #34d399, #16a34a);
+            border: none; color: #06210f; width: 22px; height: 22px; border-radius: 50%;
+            font-weight: 900; font-size: 13px; cursor: pointer; display: flex; align-items: center; justify-content: center;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.3);
+        }
+        .settings-menu {
+            position: absolute; left: 0; top: 40px; background: var(--card); border: 1px solid var(--border);
+            border-radius: 12px; padding: 6px; display: none; z-index: 60; min-width: 170px;
+            box-shadow: 0 8px 20px rgba(0,0,0,0.4);
+        }
+        .settings-menu.show { display: block; }
+        .settings-menu button {
+            width: 100%; text-align: right; background: transparent; border: none; color: var(--text);
+            padding: 9px 10px; border-radius: 8px; cursor: pointer; font-size: 13px;
+        }
+        .settings-menu button:hover { background: rgba(255,255,255,0.06); }
 
         .temp-banner {
             text-align: center; font-size: 12px; padding: 6px; background: rgba(124,58,237,0.15);
@@ -314,12 +344,28 @@ PAGE_TEMPLATE = """
             </div>
             <div class="header-right">
                 {% if admin %}<a class="admin-link" href="/admin">📊 پنل مدیریت</a>{% endif %}
-                <div class="user-balance">🪙 <span id="coinBadge">{{ coins }}</span> سکه</div>
-                <button class="icon-btn" onclick="openSettings()" title="شخصی‌سازی میکرو">⚙️</button>
+                <div class="user-balance">🪙 <span id="coinBadge">{{ coins }}</span> سکه
+                    <button class="coin-add-btn" onclick="openBuyCoins()" title="افزایش اعتبار">+</button>
+                </div>
+                <div style="position:relative;">
+                    <button class="icon-btn" onclick="toggleSettingsMenu()" title="تنظیمات">
+                        <svg viewBox="0 0 24 24" fill="none"><path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7z" fill="url(#gradGear)"/><path d="M19.4 13.5c.04-.33.06-.66.06-1s-.02-.67-.06-1l2.03-1.58a.5.5 0 0 0 .12-.64l-1.92-3.32a.5.5 0 0 0-.6-.22l-2.39.96a7.4 7.4 0 0 0-1.73-1l-.36-2.54A.5.5 0 0 0 14 2h-3.84a.5.5 0 0 0-.5.44l-.36 2.54c-.63.24-1.2.58-1.73 1l-2.39-.96a.5.5 0 0 0-.6.22L2.66 9.28a.5.5 0 0 0 .12.64L4.8 11.5c-.04.33-.06.66-.06 1s.02.67.06 1l-2.03 1.58a.5.5 0 0 0-.12.64l1.92 3.32c.14.24.42.32.66.22l2.39-.96c.53.42 1.1.76 1.73 1l.36 2.54c.05.25.26.44.5.44H14c.25 0 .46-.19.5-.44l.36-2.54c.63-.24 1.2-.58 1.73-1l2.39.96c.24.1.52.02.66-.22l1.92-3.32a.5.5 0 0 0-.12-.64l-2.04-1.58z" stroke="#9ca3af" stroke-width="1.3" stroke-linejoin="round" fill="none"/><defs><linearGradient id="gradGear" x1="0" y1="0" x2="24" y2="24"><stop offset="0" stop-color="#9ca3af"/><stop offset="1" stop-color="#4b5563"/></linearGradient></defs></svg>
+                    </button>
+                    <div class="settings-menu" id="settingsMenu">
+                        <button onclick="openSettings()">⚙️&nbsp; شخصی‌سازی میکرو</button>
+                        <button onclick="window.open('{{ support_link }}', '_blank')">🎧&nbsp; پشتیبانی</button>
+                    </div>
+                </div>
                 <div class="theme-buttons">
-                    <button class="theme-btn" onclick="setTheme('dark')">🌙</button>
-                    <button class="theme-btn" onclick="setTheme('light')">☀️</button>
-                    <button class="theme-btn" onclick="setTheme('colorful')">🎨</button>
+                    <button class="theme-btn" onclick="setTheme('dark')" title="تیره">
+                        <svg viewBox="0 0 24 24" fill="none"><path d="M20 14.5a8.5 8.5 0 1 1-10.5-8.3 6.8 6.8 0 0 0 9.3 9.3c.4-.1.8.3.7.7A8.5 8.5 0 0 1 20 14.5z" fill="url(#gradMoon)"/><defs><linearGradient id="gradMoon" x1="0" y1="0" x2="24" y2="24"><stop offset="0" stop-color="#cbd5e1"/><stop offset="1" stop-color="#64748b"/></linearGradient></defs></svg>
+                    </button>
+                    <button class="theme-btn" onclick="setTheme('light')" title="روشن">
+                        <svg viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="4.2" fill="url(#gradSun)"/><g stroke="#fbbf24" stroke-width="1.6" stroke-linecap="round"><path d="M12 3v2.2M12 18.8V21M3 12h2.2M18.8 12H21M5.6 5.6l1.6 1.6M16.8 16.8l1.6 1.6M18.4 5.6l-1.6 1.6M7.2 16.8l-1.6 1.6"/></g><defs><linearGradient id="gradSun" x1="0" y1="0" x2="24" y2="24"><stop offset="0" stop-color="#fde68a"/><stop offset="1" stop-color="#f59e0b"/></linearGradient></defs></svg>
+                    </button>
+                    <button class="theme-btn" onclick="setTheme('colorful')" title="رنگی">
+                        <svg viewBox="0 0 24 24" fill="none"><path d="M12 3a9 8 0 1 0 0 18c1.1 0 1.6-.6 1.2-1.4-.3-.6.1-1.3.8-1.3H16a5 4.3 0 0 0 5-4.3C21 7.5 17 3 12 3z" fill="url(#gradPalette)"/><circle cx="8" cy="9" r="1.3" fill="#ef4444"/><circle cx="12" cy="7.5" r="1.3" fill="#3b82f6"/><circle cx="16" cy="9" r="1.3" fill="#eab308"/><circle cx="8.5" cy="13" r="1.3" fill="#22c55e"/><defs><linearGradient id="gradPalette" x1="0" y1="0" x2="24" y2="24"><stop offset="0" stop-color="#f472b6"/><stop offset="1" stop-color="#7c3aed"/></linearGradient></defs></svg>
+                    </button>
                 </div>
             </div>
         </div>
@@ -403,6 +449,25 @@ PAGE_TEMPLATE = """
         </div>
     </div>
 
+    <!-- مودال خرید سکه -->
+    <div class="modal-overlay" id="buyCoinsModal">
+        <div class="modal-box">
+            <h2>🪙 افزایش اعتبار</h2>
+            <div id="buyCoinsList" style="display:flex; flex-direction:column; gap:10px; margin-bottom:16px;">
+                {% for pkg in coin_packages %}
+                <div class="feature-card" style="cursor:pointer;" onclick="selectPackage()">
+                    <span class="card-text">{{ pkg.coins }} سکه — {{ pkg.price }} ({{ pkg.period }})</span>
+                    <span>🪙</span>
+                </div>
+                {% endfor %}
+            </div>
+            <div id="buyCoinsNotice" class="privacy-note" style="display:none; color:#fbbf24;"></div>
+            <div class="modal-actions">
+                <button class="modal-cancel" onclick="closeBuyCoins()">بستن</button>
+            </div>
+        </div>
+    </div>
+
     <script>
         const feed = document.getElementById('chatFeed');
         const input = document.getElementById('chatInput');
@@ -446,7 +511,20 @@ PAGE_TEMPLATE = """
         }
 
         // ---------- شخصی‌سازی ----------
-        function openSettings() { document.getElementById('settingsModal').classList.add('show'); }
+        function toggleSettingsMenu() {
+            document.getElementById('settingsMenu').classList.toggle('show');
+        }
+        document.addEventListener('click', function (e) {
+            const menu = document.getElementById('settingsMenu');
+            const btn = e.target.closest('.icon-btn');
+            if (menu && menu.classList.contains('show') && !menu.contains(e.target) && !btn) {
+                menu.classList.remove('show');
+            }
+        });
+        function openSettings() {
+            document.getElementById('settingsMenu').classList.remove('show');
+            document.getElementById('settingsModal').classList.add('show');
+        }
         function closeSettings() { document.getElementById('settingsModal').classList.remove('show'); }
         function saveSettings() {
             const payload = {
@@ -458,6 +536,18 @@ PAGE_TEMPLATE = """
                 method: 'POST', headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(payload)
             }).then(function () { closeSettings(); });
+        }
+
+        // ---------- خرید سکه ----------
+        function openBuyCoins() {
+            document.getElementById('buyCoinsNotice').style.display = 'none';
+            document.getElementById('buyCoinsModal').classList.add('show');
+        }
+        function closeBuyCoins() { document.getElementById('buyCoinsModal').classList.remove('show'); }
+        function selectPackage() {
+            const notice = document.getElementById('buyCoinsNotice');
+            notice.innerText = 'درحال حاضر خرید سکه تنها از بخش پشتیبانی انجام می‌شود!';
+            notice.style.display = 'block';
         }
 
         // ---------- تصویر ضمیمه ----------
@@ -713,6 +803,8 @@ def index():
         coins=get_user_coins(user_id),
         admin=is_admin(),
         channel_link=CHANNEL_LINK,
+        support_link=SUPPORT_LINK,
+        coin_packages=COIN_PACKAGES,
         greeting=get_daily_micro_greeting(profile.get("nickname") or session.get("user_name")),
         profile=profile,
         user_name=session.get("user_name", ""),
